@@ -84,6 +84,38 @@ func TestRequestSessionKeyRequiresHeaderAndScopesToIdentity(t *testing.T) {
 	}
 }
 
+func TestRequestSessionKeyFallsBackToClientSessionID(t *testing.T) {
+	identity := auth.Identity{Kind: auth.KindKey, KeyID: "key-1"}
+	emptyReq := translate.ChatRequest{}
+
+	zcodeStyle := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	zcodeStyle.Header.Set("x-session-id", "3fcdba03-9487-4453-9f9e-409945d18419")
+	got := requestSessionKey(zcodeStyle, identity, emptyReq)
+	if got == "" {
+		t.Fatal("x-session-id should be used when X-CLI2API-Session is absent")
+	}
+
+	sameSession := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	sameSession.Header.Set("x-session-id", "3fcdba03-9487-4453-9f9e-409945d18419")
+	if requestSessionKey(sameSession, identity, emptyReq) != got {
+		t.Fatal("same x-session-id should derive the same session key")
+	}
+
+	otherSubagent := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	otherSubagent.Header.Set("x-session-id", "0d3d645e-1111-2222-3333-444455556666")
+	if requestSessionKey(otherSubagent, identity, emptyReq) == got {
+		t.Fatal("different sub-agent session must derive a different session key")
+	}
+
+	explicit := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	explicit.Header.Set("X-CLI2API-Session", "pinned-session")
+	explicit.Header.Set("x-session-id", "3fcdba03-9487-4453-9f9e-409945d18419")
+	pinned := requestSessionKey(explicit, identity, emptyReq)
+	if pinned == "" || pinned == got {
+		t.Fatal("X-CLI2API-Session must win over x-session-id")
+	}
+}
+
 func TestRequestSessionKeyFallsBackToContentSeed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	identity := auth.Identity{Kind: auth.KindKey, KeyID: "key-1"}

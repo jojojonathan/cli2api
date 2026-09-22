@@ -32,7 +32,7 @@ func (h *Handler) PrepareChatExecution(r *http.Request, request translate.ChatRe
 	prefer := ""
 	ctx := context.Background()
 	if r != nil {
-		sessionHeader = r.Header.Get("X-CLI2API-Session")
+		sessionHeader = ResolveSessionHeader(r)
 		prefer = h.requestedAccount(r)
 		ctx = r.Context()
 	}

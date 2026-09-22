@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"strings"
 	"sync/atomic"
 
 	"github.com/caigee-cmd/cli2api/internal/auth"
@@ -43,6 +44,21 @@ func (h *Handler) requestedAccount(r *http.Request) string {
 		return h.RequestedAccount(r)
 	}
 	return ""
+}
+
+// ResolveSessionHeader returns the session identifier a client wants account
+// affinity keyed on. X-CLI2API-Session wins when set; otherwise clients that
+// only send x-session-id (stable per session, unique per sub-agent, e.g.
+// zcode) fall back to it so parallel sub-agents of the same type no longer
+// collapse onto one pooled account via the shared content fingerprint.
+func ResolveSessionHeader(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(r.Header.Get("X-CLI2API-Session")); value != "" {
+		return value
+	}
+	return strings.TrimSpace(r.Header.Get("x-session-id"))
 }
 
 func (h *Handler) crossProviderPoolOn() bool {

@@ -148,10 +148,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func requestSessionKey(r *http.Request, identity auth.Identity, req translate.ChatRequest) string {
-	header := ""
-	if r != nil {
-		header = r.Header.Get("X-CLI2API-Session")
-	}
+	header := apigateway.ResolveSessionHeader(r)
 	return executor.SessionKeyFor(header, identity, req)
 }
 
