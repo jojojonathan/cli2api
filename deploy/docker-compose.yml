@@ -6,6 +6,7 @@ services:
     image: "${CLI2API_IMAGE:-ghcr.io/caigee-cmd/cli2api:latest}"
     container_name: qoder-api-proxy
     environment:
+      TZ: "Asia/Shanghai"
       HOST: "0.0.0.0"
       PORT: "3010"
       QODER_DATA_DIR: "/data"

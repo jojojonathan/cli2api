@@ -29,6 +29,7 @@ docker run -d \
   -v deploy_qoder-data:/data \
   -v /tmp/cli2api-updater:/run/cli2api-updater:ro \
   --tmpfs /run/cli2api:mode=0700 \
+  -e TZ=Asia/Shanghai \
   -e HOST=0.0.0.0 \
   -e PORT=3010 \
   -e QODER_DATA_DIR=/data \
