@@ -3,6 +3,156 @@
 Published user-facing notes for GitHub Releases and the console update page.
 Write upcoming notes as bilingual files in `changelog/unreleased/`.
 
+## 0.6.19 - 2026-10-07
+
+### English
+
+- Qoder Global accounts can claim the same daily credit campaign as Qoder CN, including automatic check-in. It stays off until the account turns it on.
+
+### 中文
+
+- Qoder 国际版账号可以领取和国内版相同的每日积分活动，并沿用现有自动签到。账号未开启前不会自动签。
+
+## 0.6.18 - 2026-10-07
+
+### English
+
+- Qoder CN check-in no longer sends a partial machine identity. Without the official runtime-info identity, those headers hid the claimable credit campaign.
+- Qoder chat now signs requests in the Go process and calls the gateway directly. Per-account Node workers stay for login, model catalog, and quota, and are no longer on the chat path.
+
+### 中文
+
+- Qoder 国内版签到在没有官方 runtime-info 机器身份时不再发送半套机器头。之前这些头会让可领取的积分活动从列表里消失。
+- Qoder 聊天改为在 Go 进程内签名并直连网关。每个账号的 Node worker 仍负责登录、模型目录和配额，不再参与聊天请求。
+
+## 0.6.17 - 2026-10-05
+
+### English
+
+- Move the Overview resources card up beside the account pool, ahead of the traffic rankings.
+
+### 中文
+
+- 概览页的资源占用卡片提前到账号池旁边，排在流量排行之前。
+
+## 0.6.16 - 2026-10-04
+
+### English
+
+- Add a Zhipu GLM account. Paste an API key to proxy the official OpenAI-compatible endpoint, with Coding Plan quota on coding keys.
+
+### 中文
+
+- 新增智谱 GLM 账号。粘贴 API Key 即可反向代理官方 OpenAI 兼容端点，Coding Plan 密钥会显示套餐额度。
+
+## 0.6.15 - 2026-10-02
+
+### English
+
+- Run the Qoder CN check-in fingerprint from an executable directory when the account runtime directory cannot run programs.
+
+### 中文
+
+- 账号运行目录不能执行程序时，Qoder 国内版签到会改到可执行目录读取机器指纹。
+
+## 0.6.14 - 2026-10-02
+
+### English
+
+- Fixed the Add Account dialog: the account-type tiles now vertically center the provider icon, radio dot, label, and info button on one line (previously they sat ~8px low), and the dialog title and subtitle are centered.
+- Replaced the Codex account mark with the official OpenAI Codex logo (the cloud/`>_` prompt glyph) instead of the generic OpenAI blossom.
+- The overview page now shows a Resources card with live memory (RSS) and CPU usage for the server process and each managed worker, refreshed every 5 seconds, plus a new `GET /api/system/resources` endpoint.
+- Bounded several unbounded memory paths: non-stream worker responses are capped at 64 MiB, inbound `/v1` request bodies at 64 MiB and console bodies at 1 MiB, per-worker log line buffering at 256 KiB, and the stats cache now evicts entries. Worker SSE parsing no longer retains every frame and builds large strings incrementally instead of repeated concatenation.
+- Qoder CN daily check-in now also sends the desktop machine OS, hostname, and risk fingerprint (`Cosy-MachineType` / `Cosy-MachineCode`) that the campaign service requires. v0.6.13 already sent the machine id headers.
+- Fix the Overview traffic chart so the success and failure lines each plot their own counts instead of both tracking total requests, and make the failure line cover every non-success outcome (error, incomplete, canceled) so no traffic disappears from the curve.
+
+### 中文
+
+- 修复「添加账号」弹窗对齐：账号类型卡片内的提供方图标、单选圆点、文字和提示按钮现在垂直居中对齐（此前整体偏下约 8px），弹窗标题与副标题改为居中。
+- Codex 账号图标换成官方 OpenAI Codex logo（云朵/`>_` 提示符），不再用通用的 OpenAI 花朵标。
+- 概览页新增「资源占用」卡片，每 5 秒刷新展示主进程和各 worker 进程的内存（RSS）与 CPU 占用，并新增 `GET /api/system/resources` 接口。
+- 收紧了多处内存上限：非流式 worker 响应限制 64 MiB，`/v1` 入站请求体限制 64 MiB、console 请求体限制 1 MiB，单条 worker 日志行缓冲限制 256 KiB，统计缓存加入淘汰；worker SSE 解析不再保留全部帧，大字符串改为增量拼接。
+- Qoder 国内版每日签到在 v0.6.13 已发送的机器身份请求头之外，补上活动服务要求的桌面端机器系统、主机名和风控指纹（`Cosy-MachineType` / `Cosy-MachineCode`）。
+- 修复概览页流量折线图：成功与失败各自显示自己的计数，不再都跟着总请求数；失败折线覆盖全部未成功请求（失败、未完成、取消），曲线不再丢数据。
+
+## 0.6.13 - 2026-09-29
+
+### English
+
+- Add a system setting to let disabled accounts continue their opted-in automatic daily check-in without making them eligible for chat routing.
+- Fix Qoder CN daily check-in by sending the desktop machine fingerprint headers required by the campaign service.
+- A routing region latch no longer survives a large change in pool composition. Adding or migrating many accounts of another region now re-seats the route on the largest region instead of leaving the new accounts idle.
+
+### 中文
+
+- 新增系统设置，允许停用账号继续执行已开启的自动签到，同时不会让它们重新参与聊天调度。
+- 修复 Qoder 国内版每日签到，补齐活动服务要求的桌面端机器指纹请求头。
+- 路由的区域锁定不再跨越大规模的账号池变化。新增或迁移大量其他区域的账号后，路由会重新落到账号最多的区域，而不会让新账号闲置。
+
+## 0.6.12 - 2026-09-29
+
+### English
+
+- The add-account type cards now show only the icon and title. Login details appear when you hover the info button.
+- Codex account cards now read the current usage response, so the 5-hour and weekly windows show up instead of staying on "Getting quota…". The subscription tier from that response is shown above the windows.
+- A stream that already finished is logged as success when the client disconnects afterward. A disconnect before the stream finishes is still canceled.
+
+### 中文
+
+- 添加账号的类型卡片现在只显示图标和标题。登录方式等说明放到信息按钮上，悬停后再展开。
+- Codex 账号卡片现在按当前额度响应读取窗口，5 小时和每周额度会显示出来，不再一直停在「额度获取中…」。响应里的订阅等级会显示在额度窗口上方。
+- 流已经结束后客户端再断开，请求日志记为成功。流还没结束就断开，仍然记为取消。
+
+## 0.6.10 - 2026-09-26
+
+### English
+
+- Codex free accounts no longer stay on login failed after a successful sign-in. The console now reads the ChatGPT account id from the login token, and an account that already signed in recovers on the next refresh.
+
+### 中文
+
+- Codex 免费账号登录成功后不再一直显示登录失败。控制台会从登录令牌里读出 ChatGPT 账号 ID，已经登录过的账号会在下次刷新时自动恢复。
+
+## 0.6.9 - 2026-09-25
+
+### English
+
+- Choose an account type from cards instead of a dropdown, with a Codex mark and a scrollable list that keeps the dialog width stable.
+
+### 中文
+
+- 新建账号改为卡片选择渠道，补上 Codex 图标；渠道过多时列表在固定高度内滚动，弹窗保持加宽后的宽度。
+
+## 0.6.8 - 2026-09-25
+
+### English
+
+- Show Codex 5-hour and weekly quota from the account usage probe, and keep a signed-in account on “getting quota” until a real window arrives.
+
+### 中文
+
+- Codex 账号改为从额度探测读取 5 小时和每周窗口；已登录但还没有窗口时显示「额度获取中」，不再显示「额度不可用」或 0/0。
+
+## 0.6.7 - 2026-09-25
+
+### English
+
+- Preserve OpenAI Responses items through Codex native forwarding, while applying the ChatGPT Codex request constraints used by CLIProxyAPI. Chat Completions and Messages requests translated to Codex use the same constraints.
+- Add `codex` provider: OpenAI Codex accounts backed by a ChatGPT subscription, with browser OAuth login, automatic token refresh, streaming chat, model catalog, and rate-limit window display.
+- Add an experimental **Command Code** (`commandcode.ai`) provider that speaks the CLI's own `/alpha/generate` protocol. That endpoint is not plan-gated, so **every plan works — including the $1 Go plan**, whose Pro-gated `/provider/v1/*` generation endpoints return `403 upgrade_required`. The adapter serves the whole model catalog. Auth is a single `user_…` key, pasted through the existing PAT tab; the model list is read from the anonymous `/provider/v1/models`, and usage is shown from `/alpha/billing/credits` (monthly plan window plus the rolling 5-hour and weekly windows). Streaming is rewritten from the upstream newline-delimited JSON into OpenAI SSE. Experimental: `/alpha/generate` is unpublished and version-coupled, so the pinned CLI version fails loudly rather than degrading silently, and the provider is not production-ready.
+- Present Qoder's context window like Trae's Max-context switch. Qoder reports a default window and a larger selectable window per model but has no upstream toggle, so the console now shows the same "default → larger + switch" control it uses for Trae instead of a raw number input. Turning it on sends the model's largest window as the request's `context_length`; turning it off clears the override so requests fall back to the model's default. The window values come from Qoder's own catalog (`default_context_window` / `available_context_windows`) rather than a hardcoded 180000, so glm-5.3-flash shows 1M instead of being capped at 180k. Qoder Global and CN.
+- Show Qoder model pricing on the account's model list. Qoder reports a per-model `price_factor` (the multiplier its own client renders as `0.50x Credit`) plus `is_free`/`tags`, but the worker dropped them, so the console showed no price for any Qoder account. The worker now forwards them and the adapter renders the multiplier as the console's credits text. The free badge follows the Qoder client's own rule — the `limited_time_free` tag (or a zero factor) is free, a positive factor is priced — so a model that reports `is_free` alongside a real multiplier (Qwen3.8-Max: `is_free` + `0.5`) shows its multiplier instead of the contradictory "免费 / x0.5" pair. Applies to Qoder Global and Qoder CN.
+- Qoder accounts now show their real remaining credits: the account card's headline sums the plan quota, the add-on pack, and the organization resource package instead of reading only the plan quota. Daily check-in rewards are credited to the add-on pack upstream, so before this a plan-only account's card never moved after a check-in (it stayed at e.g. 300 while the reward sat unshown). This matches how the Qoder client itself totals the buckets.
+
+### 中文
+
+- Codex 原生转发保留 OpenAI Responses 的 item，同时按 CLIProxyAPI 的方式改写 ChatGPT Codex 不接受的请求字段。Chat Completions 与 Messages 转成 Codex 请求时使用同一套约束。
+- 新增 `codex` provider：基于 ChatGPT 订阅的 OpenAI Codex 账号，支持浏览器 OAuth 登录、自动刷新 token、流式聊天、模型目录和限速窗口展示。
+- 新增实验性 **Command Code**（`commandcode.ai`）渠道，走 CLI 自身的 `/alpha/generate` 协议。该端点不受档位限制，**所有套餐均可用 —— 包括 $1 Go 套餐**（其 Pro 专属的 `/provider/v1/*` 生成端点会返回 `403 upgrade_required`）。适配层覆盖整个模型目录。认证只需一把 `user_…` 密钥，经现有 PAT 页签粘贴；模型列表读取匿名的 `/provider/v1/models`；用量从 `/alpha/billing/credits` 展示（月套餐窗口，以及滚动的 5 小时 / 周窗口）。流式响应由上游的换行分隔 JSON 改写为 OpenAI SSE。实验性：`/alpha/generate` 未公开且与 CLI 版本耦合，故钉版不匹配时明确报错而非静默降级，不承诺生产可用。
+- Qoder 的上下文窗口改为按 Trae 的「更大上下文」开关呈现。Qoder 每个模型都会上报默认窗口和一个可选更大窗口，但上游没有开关字段，因此控制台不再用裸数字输入框，而是复用 Trae 同款的「默认档 → 更大档 + 开关」。开启时把该模型的最大窗口作为请求的 `context_length` 发出；关闭时清除覆盖值，请求回落到模型默认窗口。窗口数值来自 Qoder 自身目录（`default_context_window` / `available_context_windows`），不再是硬编码的 180000，因此 glm-5.3-flash 显示 1M 而不再被压到 180k。国际版与国内版均适用。
+- 账号的模型列表现在会显示 Qoder 模型价格。Qoder 每个模型都带 `price_factor`（其客户端显示为 `0.50x Credit` 的那个倍率）以及 `is_free`/`tags`，但 worker 之前把它们丢掉了，所以控制台对所有 Qoder 账号都不显示价格。现在 worker 透传这些字段，适配层把倍率渲染为控制台的额度文案。免费标记对齐 Qoder 客户端自身的规则——带 `limited_time_free` 标签（或倍率为 0）才算免费，正倍率即视为计费——因此像 Qwen3.8-Max 这种「`is_free` 为真但同时带 0.5 倍率」的模型会显示倍率，而不再出现自相矛盾的「免费 / x0.5」。Qoder 国际版与国内版均适用。
+- Qoder 账号现在显示真实剩余额度：账号卡片的主数值改为把「套餐额度 + 加量包 + 组织资源包」三桶相加，而不是只读套餐额度。每日签到奖励在上游是记入加量包的，因此此前仅靠套餐额度的账号在签到后卡片数字始终不动（例如一直停在 300，奖励金额不显示）。这与 Qoder 客户端自身的合计口径一致。
+
 ## 0.6.6 - 2026-09-24
 
 ### English

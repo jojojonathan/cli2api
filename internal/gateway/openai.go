@@ -12,13 +12,19 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
+// maxChatRequestBytes bounds an inbound /v1/chat/completions or /v1/messages
+// body. Chat requests carry the full message history, so this stays generous
+// (64 MiB, same as translate.MaxNativeRequestBytes) — it exists to stop a
+// pathological body from pinning unbounded memory, not to constrain prompts.
+const maxChatRequestBytes = 64 << 20
+
 func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST only")
 		return
 	}
 	var req translate.ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxChatRequestBytes)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -69,14 +75,7 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			flusher.Flush()
 		}
 		stats, relayErr := RelayOpenAIStream(w, upstream.Response.Body)
-		status := accounts.RequestStatusOK
-		if relayErr != nil {
-			if IsStreamClientDisconnect(relayErr) || r.Context().Err() != nil || errors.Is(relayErr, context.Canceled) || errors.Is(relayErr, context.DeadlineExceeded) {
-				status = accounts.RequestStatusCanceled
-			} else {
-				status = accounts.RequestStatusError
-			}
-		}
+		status := streamLogStatus(relayErr, stats.SawDone, r.Context().Err() != nil)
 		h.recordStreamDiagnostic(requestID, upstream.Response, started, stats, relayErr, r.Context().Err())
 		ttfb := upstream.TTFBMs
 		if stats.FirstTokenAt != nil {
@@ -86,8 +85,11 @@ func (h *Handler) HandleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		logErr := relayErr
-		if status == accounts.RequestStatusCanceled {
+		switch status {
+		case accounts.RequestStatusCanceled:
 			logErr = context.Canceled
+		case accounts.RequestStatusOK:
+			logErr = nil
 		}
 		h.finishRequestLog(requestID, started, req, publicModel, upstream.AccountID, firstNonEmpty(upstream.Provider, providerFilter), upstream.Routing, status, ttfb, &stats, logErr, upstream.AttemptCount, upstream.ReasoningLevel)
 		if relayErr == nil {

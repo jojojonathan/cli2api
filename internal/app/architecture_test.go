@@ -29,9 +29,6 @@ var importAllowlist = map[string]map[string]string{
 	modulePath + "/internal/api": {
 		modulePath + "/internal/app": "S15: api is the remaining test-only compatibility facade (api.New → app.New).",
 	},
-	modulePath + "/internal/executor": {
-		modulePath + "/internal/providers/qoder": "S09 leftover: Qoder chat still uses worker HTTP via qoder.NewChatRequest until production chat switches to Adapter.",
-	},
 	modulePath + "/internal/runtime": {
 		modulePath + "/internal/providers/qoder": "S08/S09 leftover: Qoder child spawn, HOME, catalog, and quota still call providers/qoder until remaining capabilities go through Adapter.",
 	},
@@ -176,7 +173,7 @@ func isConcreteProvider(imp string) bool {
 	rest := strings.TrimPrefix(imp, prefix)
 	root, _, _ := strings.Cut(rest, "/")
 	switch root {
-	case "qoder", "workbuddy", "trae", "devin":
+	case "qoder", "workbuddy", "trae", "devin", "command", "codex":
 		return true
 	default:
 		return false

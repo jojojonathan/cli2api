@@ -101,6 +101,7 @@ var Qoder = ProviderDescriptor{
 			ID: "global", Label: "Global", ChatBase: "https://api1.qoder.sh",
 			BillingBase: "https://openapi.qoder.sh", AuthBase: "https://qoder.sh",
 			DefaultDomain: "qoder.global",
+			Checkin:       &CheckinPolicy{Timezone: "Asia/Shanghai"},
 		},
 		{
 			ID: "cn", Label: "CN", ChatBase: "https://gateway.qoder.com.cn",
@@ -190,11 +191,87 @@ var Devin = ProviderDescriptor{
 	DefaultRegion: "global",
 }
 
+// Command descriptor. Protocol constants stay in internal/providers/command.
+// Global-only in-process adapter. Auth is a single pasted user_… Bearer key
+// shared by the CLI and the API: no OAuth, no browser loopback. Generation goes
+// through /alpha/generate, the CLI's own endpoint, so the $1 Go plan (which has
+// no /provider/v1/* API access) is served too.
+var Command = ProviderDescriptor{
+	ID:                "command",
+	Label:             "Command Code",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"command-key-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: false,
+		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global", ChatBase: "https://api.commandcode.ai",
+			BillingBase: "https://api.commandcode.ai", AuthBase: "https://api.commandcode.ai",
+			DefaultDomain: "commandcode.ai",
+		},
+	},
+	DefaultRegion: "global",
+}
+
+// Codex descriptor. OpenAI Codex (ChatGPT subscription) via the ChatGPT
+// backend Responses endpoint; OAuth with a fixed loopback redirect.
+var Codex = ProviderDescriptor{
+	ID:                "codex",
+	Label:             "Codex",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthOAuth},
+	CredentialFormats: []string{"codex-oauth-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: true, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: true, BrowserLogin: true,
+		PATLogin: false, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "global", Label: "Global", ChatBase: "https://chatgpt.com/backend-api/codex",
+			AuthBase: "https://auth.openai.com", BillingBase: "https://chatgpt.com",
+			DefaultDomain: "chatgpt.com",
+		},
+	},
+	DefaultRegion: "global",
+}
+
+// Zhipu descriptor. Protocol constants stay in internal/providers/zhipu.
+// CN-only in-process adapter. Auth is a pasted API key; pay-as-you-go and
+// Coding Plan differ by base URL, not by a second provider family.
+var Zhipu = ProviderDescriptor{
+	ID:                "zhipu",
+	Label:             "Zhipu GLM",
+	Runtime:           RuntimeInProcess,
+	AuthTypes:         []AuthType{AuthPAT},
+	CredentialFormats: []string{"zhipu-key-v1"},
+	Capabilities: ProviderCapabilities{
+		Chat: true, Stream: true, Tools: true, Images: false, Reasoning: true,
+		ModelCatalog: true, Usage: true, Login: false, BrowserLogin: false,
+		PATLogin: true, ImportExport: true,
+	},
+	Regions: []RegionDescriptor{
+		{
+			ID: "cn", Label: "CN", ChatBase: "https://open.bigmodel.cn",
+			BillingBase: "https://open.bigmodel.cn", AuthBase: "https://open.bigmodel.cn",
+			DefaultDomain: "bigmodel.cn",
+		},
+	},
+	DefaultRegion: "cn",
+}
+
 var registry = map[string]ProviderDescriptor{
 	Qoder.ID:     Qoder,
 	WorkBuddy.ID: WorkBuddy,
 	Trae.ID:      Trae,
 	Devin.ID:     Devin,
+	Command.ID:   Command,
+	Codex.ID:     Codex,
+	Zhipu.ID:     Zhipu,
 }
 
 func Get(id string) (ProviderDescriptor, bool) {
@@ -203,7 +280,7 @@ func Get(id string) (ProviderDescriptor, bool) {
 }
 
 func List() []ProviderDescriptor {
-	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin}
+	return []ProviderDescriptor{Qoder, WorkBuddy, Trae, Devin, Command, Codex, Zhipu}
 }
 
 // Resolve validates a provider/region pair. Empty values fall back to the

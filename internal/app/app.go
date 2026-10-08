@@ -22,10 +22,13 @@ import (
 	apigateway "github.com/caigee-cmd/cli2api/internal/gateway"
 	applogs "github.com/caigee-cmd/cli2api/internal/logs"
 	"github.com/caigee-cmd/cli2api/internal/providers"
+	"github.com/caigee-cmd/cli2api/internal/providers/codex"
+	"github.com/caigee-cmd/cli2api/internal/providers/command"
 	"github.com/caigee-cmd/cli2api/internal/providers/devin"
 	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
 	"github.com/caigee-cmd/cli2api/internal/providers/trae"
 	"github.com/caigee-cmd/cli2api/internal/providers/workbuddy"
+	"github.com/caigee-cmd/cli2api/internal/providers/zhipu"
 	accountruntime "github.com/caigee-cmd/cli2api/internal/runtime"
 	httpserver "github.com/caigee-cmd/cli2api/internal/server"
 	sqlstore "github.com/caigee-cmd/cli2api/internal/store"
@@ -86,6 +89,9 @@ func New(cfg config.Config) *App {
 	if _, err := EnsureWorkBuddyCheckinTime(context.Background(), store); err != nil {
 		panic(err)
 	}
+	if _, err := EnsureCheckinDisabledAccounts(context.Background(), store); err != nil {
+		panic(err)
+	}
 	cfg.ProxyAPIKey = proxyAPIKey
 	runtimeDir := cfg.RuntimeDir
 	if runtimeDir == "" {
@@ -109,8 +115,18 @@ func New(cfg config.Config) *App {
 	providerReg.Register(workbuddyClient.Adapter())
 	providerReg.Register(trae.NewClient(store).Adapter())
 	providerReg.Register(devin.NewClient(store).Adapter())
+	providerReg.Register(command.NewClient(store).Adapter())
+	providerReg.Register(codex.NewClient(store).Adapter())
+	providerReg.Register(zhipu.NewClient(store).Adapter())
 	qoderClient := qoder.NewClient()
 	qoderClient.Bind(manager.AccountURL, manager.ProxyAPIKey)
+	qoderClient.SetDirect(qoder.NewDirect(store, func(ctx context.Context, accountID string) (string, error) {
+		account, err := store.Get(ctx, accountID)
+		if err != nil {
+			return "", err
+		}
+		return account.ProviderRegion, nil
+	}))
 	providerReg.Register(qoderClient.Adapter())
 	manager.SetProviders(providerReg)
 	manager.SetWorkBuddy(workbuddyClient)
@@ -142,6 +158,9 @@ func New(cfg config.Config) *App {
 	}
 	a.CrossProviderModelPool.Store(crossProviderModelPool)
 	a.Control.Catalog = appsvc.NewCatalog(a.FetchWorkerModelsForMode)
+	if a.Control.Settings != nil {
+		a.Control.Settings.BindCatalog(a.Control.Catalog)
+	}
 	// Auth copies and all executor copies read the same atomic live key.
 	// Cfg.ProxyAPIKey and Executor.WorkerKey remain bootstrap snapshots.
 	a.Executor.WorkerKeySource = a.Auth.ConsoleKey

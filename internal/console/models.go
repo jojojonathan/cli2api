@@ -11,7 +11,7 @@ import (
 func splitModelSettingPath(raw, queryProvider string) (provider, modelKey string) {
 	raw = strings.TrimPrefix(raw, "/api/models/")
 	provider = strings.ToLower(strings.TrimSpace(queryProvider))
-	for _, prefix := range []string{"trae/", "workbuddy/", "qoder/"} {
+	for _, prefix := range []string{"trae/", "workbuddy/", "qoder/", "devin/", "command/", "codex/", "zhipu/"} {
 		if strings.HasPrefix(strings.ToLower(raw), prefix) {
 			provider = strings.TrimSuffix(prefix, "/")
 			raw = raw[len(prefix):]
@@ -58,7 +58,7 @@ func (h *Handler) HandleModelSetting(w http.ResponseWriter, r *http.Request) {
 			MaxMode         *bool   `json:"max_mode"`
 			ReasoningEffort *string `json:"reasoning_effort"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxConsoleBodyBytes)).Decode(&input); err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
@@ -82,6 +82,14 @@ func modelSettingResponse(setting control.ModelSetting) map[string]any {
 			"model": setting.Model, "provider": setting.Provider,
 			"max_mode": setting.MaxMode, "reasoning_effort": setting.ReasoningEffort,
 			"context_custom": setting.ContextCustom,
+		}
+	case "qoder":
+		return map[string]any{
+			"model": setting.Model, "provider": setting.Provider,
+			"max_mode":               setting.MaxMode,
+			"context_length":         setting.ContextLength,
+			"default_context_length": setting.DefaultContextLength,
+			"context_custom":         setting.ContextCustom,
 		}
 	default:
 		return map[string]any{

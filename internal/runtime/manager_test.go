@@ -29,6 +29,7 @@ type fakeProcess struct {
 
 func (p *fakeProcess) URL() string        { return p.url }
 func (p *fakeProcess) Done() <-chan error { return p.done }
+func (p *fakeProcess) PID() int           { return 0 }
 func (p *fakeProcess) Stop() error {
 	p.stopped = true
 	select {
@@ -542,7 +543,7 @@ func TestManagerRefreshFetchesQuotaWithoutAffectingHealth(t *testing.T) {
 	if item.Quota == nil {
 		t.Fatalf("expected quota snapshot on pool item, got %+v", item)
 	}
-	if item.Quota.Used != 150 || item.Quota.Total != 600 || item.Quota.Unit != "credits" || item.Quota.Exceeded {
+	if item.Quota.Used != 190 || item.Quota.Total != 700 || item.Quota.Unit != "credits" || item.Quota.Exceeded {
 		t.Fatalf("quota snapshot = %+v", item.Quota)
 	}
 	if !item.Quota.HasAddOn || item.Quota.AddOnTotal != 100 || item.Quota.AddOnUsed != 40 {
@@ -552,7 +553,7 @@ func TestManagerRefreshFetchesQuotaWithoutAffectingHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(views) != 1 || views[0].Quota == nil || views[0].Quota.Remaining != 450 {
+	if len(views) != 1 || views[0].Quota == nil || views[0].Quota.Remaining != 510 {
 		t.Fatalf("account view quota = %+v", views)
 	}
 }
@@ -768,12 +769,21 @@ func TestManagerRestartsUnexpectedlyExitedEnabledAccount(t *testing.T) {
 		if second == first {
 			t.Fatal("manager reused exited process")
 		}
-		item, ok := manager.Pool().ByID(starter.accounts[0].ID)
-		if !ok || item.Restarts != 1 {
+	case <-time.After(2 * time.Second):
+		t.Fatal("account process was not restarted")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var item executor.Item
+	var ok bool
+	for {
+		item, ok = manager.Pool().ByID(starter.accounts[0].ID)
+		if ok && item.Restarts == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
 			t.Fatalf("restart state = %+v ok=%v", item, ok)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("account process was not restarted")
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

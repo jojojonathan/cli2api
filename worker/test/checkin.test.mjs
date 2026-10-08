@@ -10,9 +10,13 @@ function fixture(responses, options = {}) {
   let refreshed = 0;
   const auth = {
     isAuthenticated: () => true,
-    getUserInfo: () => ({ security_oauth_token: refreshed ? "new-test-token" : "test-token" }),
+    getUserInfo: () => ({
+      security_oauth_token: refreshed ? "new-test-token" : "test-token",
+      ...(options.accountId ? { uid: options.accountId } : {}),
+    }),
     refreshTokenIfNeeded: async () => {},
     forceRefreshToken: async () => { refreshed++; },
+    getMachineId: async () => options.machineId,
   };
   const checkin = createQoderCheckin({
     region: "cn",
@@ -66,10 +70,71 @@ test("CN check-in lists campaigns then claims the CLAIM_BENEFIT campaign", async
   assert.equal(calls[1].init.headers["User-Agent"], "Qoder");
   assert.equal(calls[1].init.headers["Cosy-ClientType"], "10");
   assert.equal(calls[1].init.headers["Cosy-Version"], "0.3.4");
+  assert.equal(calls[1].init.headers["Cosy-MachineId"], undefined);
+  assert.equal(calls[1].init.headers["Cosy-MachineToken"], undefined);
   assert.equal(calls[1].init.headers.Referer, "https://openapi.qoder.com.cn/growth-page/activity-iframe");
   assert.equal(calls[1].init.redirect, "manual");
   assert.ok(calls[1].init.signal instanceof AbortSignal);
   assert.ok(!calls.some((call) => String(call.url).includes("daily-check-in")));
+});
+
+test("CN check-in sends the machine identity headers used by the desktop client", async () => {
+  const identity = { machineToken: "risk-token", machineType: "risk-type", machineCode: "risk-code" };
+  const reads = [];
+  const { checkin, calls } = fixture([json(listed(credit())), json({ status: "CLAIMED" })], {
+    machineId: "machine-test-id",
+    accountId: "account-1",
+    runtimeInfoPath: () => "/runtime-info",
+    readRiskIdentity: async (executable, account) => {
+      reads.push({ executable, account });
+      return identity;
+    },
+  });
+  await checkin();
+  assert.deepEqual(reads, [{ executable: "/runtime-info", account: "account-1" }]);
+  for (const call of calls) {
+    assert.equal(call.init.headers["Cosy-MachineId"], "machine-test-id");
+    assert.equal(call.init.headers["Cosy-MachineToken"], "risk-token");
+    assert.equal(call.init.headers["Cosy-MachineType"], "risk-type");
+    assert.equal(call.init.headers["Cosy-MachineCode"], "risk-code");
+    assert.match(call.init.headers["Cosy-MachineOS"], /_(darwin|linux|win32)$/);
+    assert.equal(typeof call.init.headers["Cosy-MachineHostname"], "string");
+  }
+});
+
+test("CN check-in uses an executable copy when the account runtime directory cannot execute files", async () => {
+  const previous = process.env.QODER_RUNTIME_INFO_DIR;
+  process.env.QODER_RUNTIME_INFO_DIR = "/opt/qoder-runtime";
+  const reads = [];
+  try {
+    const { checkin } = fixture([json(listed(credit({ status: "CLAIMED" })))], {
+      machineId: "machine-test-id",
+      accountId: "account-1",
+      runtimeInfoPath: () => "/run/account/.bin/runtime-info-linux-x64-probe",
+      prepareRuntimeInfo: (source) => `/opt/qoder-runtime/${source.split("/").at(-1)}`,
+      readRiskIdentity: async (executable) => {
+        reads.push(executable);
+        return { machineToken: "risk-token", machineType: "risk-type", machineCode: "risk-code" };
+      },
+    });
+    assert.equal((await checkin()).status, "already");
+    assert.deepEqual(reads, ["/opt/qoder-runtime/runtime-info-linux-x64-probe"]);
+  } finally {
+    if (previous === undefined) delete process.env.QODER_RUNTIME_INFO_DIR;
+    else process.env.QODER_RUNTIME_INFO_DIR = previous;
+  }
+});
+
+test("CN check-in omits machine headers when the risk identity bridge is unavailable", async () => {
+  const { checkin, calls } = fixture([json(listed(credit({ status: "CLAIMED" })))], {
+    machineId: "machine-test-id",
+    accountId: "account-1",
+    runtimeInfoPath: () => "",
+  });
+  assert.equal((await checkin()).status, "already");
+  for (const name of ["Cosy-MachineId", "Cosy-MachineToken", "Cosy-MachineType", "Cosy-MachineCode", "Cosy-MachineOS", "Cosy-MachineHostname"]) {
+    assert.equal(calls[0].init.headers[name], undefined);
+  }
 });
 
 test("VIEW_DETAILS campaigns are never claimed", async () => {
@@ -105,8 +170,21 @@ test("404 list is skipped, not a protocol error", async () => {
   assert.equal(calls.length, 1);
 });
 
+test("global check-in uses the international campaign host", async () => {
+  const id = "01a0f1db-9cc0-725f-a2f4-ca596883291d";
+  const { checkin, calls } = fixture([json(listed(credit({ id }), details())), json({ status: "CLAIMED" })], { region: "global" });
+  assert.deepEqual(await checkin(), { status: "success", message: "签到成功 +100 积分", reward_credits: 100 });
+  assert.equal(calls[0].url, "https://openapi.qoder.sh/sash/api/v1/me/campaigns");
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[1].url, `https://openapi.qoder.sh/sash/api/v1/me/campaigns/${id}/claim`);
+  assert.equal(calls[1].init.method, "POST");
+  assert.equal(calls[1].init.headers.Origin, "https://qoder.sh");
+  assert.equal(calls[1].init.headers.Referer, "https://openapi.qoder.sh/growth-page/activity-iframe");
+  assert.equal(calls[1].init.headers["Cosy-Version"], "0.3.4");
+});
+
 test("unsupported regions never touch auth or the network", async () => {
-  const { checkin, calls } = fixture([], { region: "global", getAuthManager: () => { throw new Error("unexpected auth access"); } });
+  const { checkin, calls } = fixture([], { region: "eu", getAuthManager: () => { throw new Error("unexpected auth access"); } });
   await assert.rejects(checkin(), /region_unsupported/);
   assert.equal(calls.length, 0);
 });

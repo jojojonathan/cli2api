@@ -122,6 +122,38 @@ func TestPrepareAppliesQoderContextAndStartsLog(t *testing.T) {
 	}
 }
 
+func TestPrepareNativeResponsesKeepsCompatSeedAndReasoning(t *testing.T) {
+	ex := NewChatExecutor(NewPool(nil, nil), "")
+	native, err := translate.ParseNativeResponses([]byte(`{"model":"codex/gpt-5.5","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"high"},"instructions":"rules"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compat, err := native.Compat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &stubLogs{}
+	got, err := ex.Prepare(PrepareInput{
+		Request:       compat.Chat,
+		NativeRequest: native,
+		Logs:          logs,
+		Identity:      auth.ConsoleIdentity(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatOnly, err := ex.Prepare(PrepareInput{Request: compat.Chat, Identity: auth.ConsoleIdentity()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionKeyFromContext(got.Context) == "" || sessionKeyFromContext(got.Context) != sessionKeyFromContext(chatOnly.Context) {
+		t.Fatal("native request replaced the compatibility session seed")
+	}
+	if len(logs.entries) != 1 || logs.entries[0].RequestedReasoning != "high" {
+		t.Fatalf("native reasoning log=%+v", logs.entries)
+	}
+}
+
 func TestPrepareSkipsNonQoderContextDefaults(t *testing.T) {
 	ex := NewChatExecutor(NewPool(nil, nil), "")
 	contexts := &stubContexts{value: 500000, ok: true}
@@ -219,4 +251,39 @@ func asPrepareError(err error, out **PrepareError) bool {
 	}
 	*out = got
 	return true
+}
+
+func TestProviderPrefixRecognizesCommand(t *testing.T) {
+	cases := map[string]string{
+		"qoder/glm-5.2":                    "qoder",
+		"workbuddy/deepseek-v4-pro":        "workbuddy",
+		"trae/kimi-k2.6":                   "trae",
+		"devin/swe-2":                      "devin",
+		"codex/gpt-5.5":                    "codex",
+		"zhipu/glm-5.2":                    "zhipu",
+		"command/deepseek/deepseek-v4-pro": "command",
+		"command/moonshotai/Kimi-K3":       "command",
+		// A bare org-namespaced Command Code id must NOT be read as a provider.
+		"deepseek/deepseek-v4-pro": "",
+		"moonshotai/Kimi-K3":       "",
+	}
+	for model, want := range cases {
+		if got := ProviderPrefix(model); got != want {
+			t.Errorf("ProviderPrefix(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
+func TestPrepareStripsCommandPrefix(t *testing.T) {
+	ex := NewChatExecutor(NewPool(nil, nil), "")
+	got, err := ex.Prepare(PrepareInput{
+		Request:  translate.ChatRequest{Model: "command/deepseek/deepseek-v4-pro", Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}}},
+		Identity: auth.KeyIdentity(accounts.APIKey{ID: "k", Name: "ci", Providers: []string{"command"}, Enabled: true}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProviderFilter != "command" || got.Request.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("filter=%q model=%q, want command / deepseek/deepseek-v4-pro", got.ProviderFilter, got.Request.Model)
+	}
 }

@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
-	"github.com/caigee-cmd/cli2api/internal/providers/qoder"
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
@@ -64,6 +64,22 @@ type StreamResult struct {
 	TTFBMs         int
 	Routing        string
 	ReasoningLevel string
+	// NativeResponses marks the body as an upstream OpenAI Responses SSE stream
+	// that /v1/responses can relay verbatim instead of translating.
+	NativeResponses bool
+}
+
+type NativeResponseResult struct {
+	Response       json.RawMessage
+	AccountID      string
+	Provider       string
+	AttemptCount   int
+	Routing        string
+	ReasoningLevel string
+	FinishReason   string
+	PromptTokens   *int
+	OutputTokens   *int
+	CachedTokens   *int
 }
 
 type requestIDKey struct{}
@@ -114,6 +130,12 @@ const (
 	routingSticky       = "sticky"
 	routingStickyEscape = "sticky_escape"
 )
+
+// maxWorkerResponseBytes caps a fully buffered worker response. Non-stream
+// completions are decoded from a single []byte; without a limit one inflated
+// upstream payload could pin unbounded memory per in-flight request. 64 MiB
+// matches translate.MaxCollectedResponseBytes used by the other collectors.
+const maxWorkerResponseBytes = 64 << 20
 
 type routingPlan struct {
 	Source       string
@@ -254,7 +276,7 @@ func NewChatExecutor(pool *Pool, workerKey string) ChatExecutor {
 	}
 }
 
-func (e ChatExecutor) routeQuery(prefer, providerFilter, regionFilter, publicModel string, allowed []string, excluded map[string]struct{}) RouteQuery {
+func (e ChatExecutor) routeQuery(prefer, providerFilter, regionFilter, publicModel string, allowed []string, excluded map[string]struct{}, eligible func(Item) bool) RouteQuery {
 	return RouteQuery{
 		PublicModel:      publicModel,
 		PreferAccount:    prefer,
@@ -262,11 +284,12 @@ func (e ChatExecutor) routeQuery(prefer, providerFilter, regionFilter, publicMod
 		RegionFilter:     regionFilter,
 		AllowedProviders: allowed,
 		Excluded:         excluded,
+		Eligible:         eligible,
 	}
 }
 
-func (e ChatExecutor) pick(requestID, prefer, providerFilter, regionFilter, publicModel string, allowed []string, excluded map[string]struct{}) (Item, error) {
-	query := e.routeQuery(prefer, providerFilter, regionFilter, publicModel, allowed, excluded)
+func (e ChatExecutor) pick(requestID, prefer, providerFilter, regionFilter, publicModel string, allowed []string, excluded map[string]struct{}, eligible func(Item) bool) (Item, error) {
+	query := e.routeQuery(prefer, providerFilter, regionFilter, publicModel, allowed, excluded, eligible)
 	if e.Pool != nil {
 		if item, ok := e.Pool.PickRoute(query); ok {
 			if retryAfter := e.Pool.RetryAfter(item, publicModel); retryAfter > 0 {
@@ -416,7 +439,11 @@ func coolingPickError(item Item, publicModel string, retryAfter time.Duration) e
 	}, nil)
 }
 
-func (e ChatExecutor) attemptsFor(providerFilter, regionFilter, publicModel string, allowed []string) int {
+func (e ChatExecutor) attemptsFor(providerFilter, regionFilter, publicModel string, allowed []string, eligible ...func(Item) bool) int {
+	var predicate func(Item) bool
+	if len(eligible) > 0 {
+		predicate = eligible[0]
+	}
 	maxAttempts := e.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 4
@@ -425,7 +452,7 @@ func (e ChatExecutor) attemptsFor(providerFilter, regionFilter, publicModel stri
 		maxAttempts = 64
 	}
 	if e.Pool != nil {
-		if n := e.Pool.LenRoute(e.routeQuery("", providerFilter, regionFilter, publicModel, allowed, nil)); n > 0 {
+		if n := e.Pool.LenRoute(e.routeQuery("", providerFilter, regionFilter, publicModel, allowed, nil, predicate)); n > 0 {
 			if n > maxAttempts {
 				return maxAttempts
 			}
@@ -457,6 +484,17 @@ func keyGrantedSingleRegion(providerFilter string, allowed []string) (string, bo
 		return "", false
 	}
 	return regions[0], true
+}
+
+// qoderDirect reports whether this Qoder account chats through the registered
+// adapter instead of its login worker. Tests that stub a worker URL and do not
+// register the adapter stay on the worker path.
+func (e ChatExecutor) qoderDirect(item Item) bool {
+	if itemProvider(item) != "qoder" || e.Providers == nil {
+		return false
+	}
+	adapter, ok := e.Providers.Get("qoder")
+	return ok && adapter.Chat != nil
 }
 
 func isInProcessItem(item Item) bool {
@@ -577,6 +615,34 @@ func (e ChatExecutor) recordAttempt(ctx context.Context, attempt accounts.Reques
 	e.OnAttempt(attempt)
 }
 
+// buildWorkerChatPayload is the OpenAI-shaped body a non-Qoder worker stub
+// still accepts. Qoder production chat does not use it.
+func buildWorkerChatPayload(req translate.ChatRequest, stream bool) map[string]any {
+	payload := map[string]any{
+		"model":    req.Model,
+		"messages": req.Messages,
+		"stream":   stream,
+	}
+	if len(req.MaxCompletionTokens) > 0 {
+		payload["max_tokens"] = json.RawMessage(req.MaxCompletionTokens)
+	} else if len(req.MaxTokens) > 0 {
+		payload["max_tokens"] = json.RawMessage(req.MaxTokens)
+	}
+	if len(req.Temperature) > 0 {
+		payload["temperature"] = json.RawMessage(req.Temperature)
+	}
+	if len(req.Tools) > 0 {
+		payload["tools"] = json.RawMessage(req.Tools)
+	}
+	if len(req.ToolChoice) > 0 {
+		payload["tool_choice"] = json.RawMessage(req.ToolChoice)
+	}
+	if len(req.ReasoningEffort) > 0 {
+		payload["reasoning_effort"] = json.RawMessage(req.ReasoningEffort)
+	}
+	return payload
+}
+
 func (e ChatExecutor) newWorkerRequest(ctx context.Context, item Item, payload []byte, prefer string) (*http.Request, error) {
 	account := prefer
 	if account == "" {
@@ -586,7 +652,21 @@ func (e ChatExecutor) newWorkerRequest(ctx context.Context, item Item, payload [
 	if e.WorkerKeySource != nil {
 		key = e.WorkerKeySource()
 	}
-	return qoder.NewChatRequest(ctx, item.URL, account, RequestIDFromContext(ctx), key, payload)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(item.URL, "/")+"/v1/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+key)
+	}
+	if account != "" {
+		httpReq.Header.Set("X-Qoder-Account", account)
+	}
+	if requestID := RequestIDFromContext(ctx); requestID != "" {
+		httpReq.Header.Set("X-Request-Id", requestID)
+	}
+	return httpReq, nil
 }
 
 func classifyWorkerErr(resp *http.Response, body string) Classified {
@@ -615,6 +695,8 @@ type routeLoop struct {
 	attempts       int
 	pinned         string
 	index          int
+	// eligible narrows candidates to one protocol capability; nil admits all.
+	eligible func(Item) bool
 }
 
 func (e ChatExecutor) newRouteLoop(ctx context.Context, prefer, providerFilter string, req translate.ChatRequest) routeLoop {
@@ -643,7 +725,7 @@ func (e ChatExecutor) newRouteLoop(ctx context.Context, prefer, providerFilter s
 		routing:        routing,
 		excluded:       map[string]struct{}{},
 		allowed:        allowed,
-		attempts:       e.attemptsFor(providerFilter, regionFilter, req.Model, allowed),
+		attempts:       e.attemptsFor(providerFilter, regionFilter, req.Model, allowed, nil),
 	}
 	if routing.Source == routingPin {
 		loop.pinned = prefer
@@ -652,7 +734,7 @@ func (e ChatExecutor) newRouteLoop(ctx context.Context, prefer, providerFilter s
 }
 
 func (l *routeLoop) pickNext(e ChatExecutor, publicModel string) (Item, int, error) {
-	item, err := e.pick(l.requestID, l.prefer, l.providerFilter, l.regionFilter, publicModel, l.allowed, l.excluded)
+	item, err := e.pick(l.requestID, l.prefer, l.providerFilter, l.regionFilter, publicModel, l.allowed, l.excluded, l.eligible)
 	if err != nil {
 		return Item{}, l.index, err
 	}
@@ -661,7 +743,7 @@ func (l *routeLoop) pickNext(e ChatExecutor, publicModel string) (Item, int, err
 	l.prefer = ""
 	if l.regionFilter == "" {
 		l.regionFilter = pinRegion(l.regionFilter, item.Region)
-		l.attempts = e.attemptsFor(l.providerFilter, l.regionFilter, publicModel, l.allowed)
+		l.attempts = e.attemptsFor(l.providerFilter, l.regionFilter, publicModel, l.allowed, l.eligible)
 	}
 	l.index++
 	return item, attemptIndex, nil
@@ -696,10 +778,6 @@ func (l routeLoop) pickFailure(err error) (int, string, string, error) {
 func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatRequest, prefer, providerFilter string) (result ChatResult, returnErr error) {
 	loop := e.newRouteLoop(ctx, prefer, providerFilter, req)
 	defer func() { result.Routing = loop.routing.Source }()
-	payload, err := json.Marshal(qoder.BuildChatPayload(req, false))
-	if err != nil {
-		return ChatResult{}, err
-	}
 	for loop.index < loop.attempts {
 		item, i, err := loop.pickNext(e, req.Model)
 		if err != nil {
@@ -709,7 +787,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			}
 			return ChatResult{}, pickErr
 		}
-		if isInProcessItem(item) {
+		if isInProcessItem(item) || e.qoderDirect(item) {
 			result, classified, err := e.chatInProcessNonStreamAttempt(ctx, item, req, i)
 			if err == nil {
 				result.AttemptCount = i + 1
@@ -726,6 +804,10 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 				continue
 			}
 			return ChatResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
+		}
+		payload, err := json.Marshal(buildWorkerChatPayload(req, false))
+		if err != nil {
+			return ChatResult{}, err
 		}
 		headerAccount := loop.headerAccount(item, i)
 		httpReq, err := e.newWorkerRequest(ctx, item, payload, headerAccount)
@@ -754,7 +836,9 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 			loop.exclude(item)
 			continue
 		}
-		body, _ := io.ReadAll(resp.Body)
+		// Non-stream worker responses are buffered whole; cap them so a
+		// pathological upstream cannot pin unbounded memory per request.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxWorkerResponseBytes))
 		resp.Body.Close()
 		finished := time.Now().UTC()
 		latency := int(finished.Sub(started).Milliseconds())
@@ -891,20 +975,43 @@ func (e ChatExecutor) chatInProcessNonStreamAttempt(ctx context.Context, item It
 	}, Classified{}, nil
 }
 
-func (e ChatExecutor) chatInProcessStreamAttempt(ctx context.Context, item Item, req translate.ChatRequest, attemptIndex int) (StreamResult, Classified, error) {
-	adapter, _ := e.Providers.Get(itemProvider(item))
-	if adapter.Chat == nil {
+func (e ChatExecutor) chatInProcessStreamAttempt(ctx context.Context, item Item, req translate.ChatRequest, native *translate.NativeResponsesRequest, attemptIndex int, preferNativeResponses bool) (StreamResult, Classified, error) {
+	adapter, ok := e.Providers.Get(itemProvider(item))
+	if !ok {
+		return StreamResult{}, Classified{}, fmt.Errorf("provider %s is not registered", item.Provider)
+	}
+	if !preferNativeResponses && adapter.Chat == nil {
 		return StreamResult{}, Classified{}, fmt.Errorf("provider %s does not implement chat", item.Provider)
 	}
+	if preferNativeResponses && native != nil && adapter.NativeResponses == nil {
+		return StreamResult{}, Classified{}, providers.ErrUnsupported
+	}
 	started := time.Now()
-	resp, resolved, err := adapter.Chat.ChatStream(ctx, item.ID, sanitizeForItem(item, req))
+	var resp *http.Response
+	var resolved providers.ResolvedChat
+	var err error
+	nativeResponses := false
+	if preferNativeResponses && native != nil && adapter.NativeResponses != nil {
+		options := providers.RequestOptions{
+			Model:            NativeModelID(item, req.Model),
+			DropSystemPrompt: item.DropSystemPrompt && itemProvider(item) != "qoder",
+		}
+		resp, resolved, err = adapter.NativeResponses.ResponsesStream(ctx, item.ID, native, options)
+		nativeResponses = err == nil
+	} else {
+		resp, resolved, err = adapter.Chat.ChatStream(ctx, item.ID, sanitizeForItem(item, req))
+	}
 	if err == nil {
 		logResolvedReasoning(ctx, "chat_stream", item, req.Model, resolved.ReasoningLevel)
 	}
 	if err != nil {
 		finished := time.Now().UTC()
 		latency := int(finished.Sub(started).Milliseconds())
+		if errors.Is(err, providers.ErrUnsupported) {
+			return StreamResult{AccountID: item.ID, Provider: item.Provider}, Classified{Kind: accounts.KindInvalidRequest, Message: err.Error()}, err
+		}
 		if requestContextDone(ctx, err) {
+
 			return StreamResult{AccountID: item.ID, Provider: item.Provider}, Classified{Kind: accounts.KindUnavailable, Message: err.Error()}, err
 		}
 		classified := e.classifyInProcessError(err)
@@ -929,7 +1036,7 @@ func (e ChatExecutor) chatInProcessStreamAttempt(ctx context.Context, item Item,
 		AttemptIndex: attemptIndex, AccountID: item.ID, StartedAt: started, FinishedAt: &headerAt,
 		Status: accounts.AttemptStatusOK, HTTPStatus: ptrInt(http.StatusOK), LatencyMs: &ttfb,
 	})
-	return StreamResult{Response: resp, AccountID: item.ID, Provider: item.Provider, TTFBMs: ttfb, ReasoningLevel: resolved.ReasoningLevel}, Classified{}, nil
+	return StreamResult{Response: resp, AccountID: item.ID, Provider: item.Provider, TTFBMs: ttfb, ReasoningLevel: resolved.ReasoningLevel, NativeResponses: nativeResponses}, Classified{}, nil
 }
 
 func (e ChatExecutor) classifyInProcessError(err error) Classified { return ClassifyError(err) }
@@ -974,7 +1081,7 @@ func decodeChatResult(req translate.ChatRequest, body []byte) (ChatResult, error
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return ChatResult{}, fmt.Errorf("decode worker response: %w; body=%s", err, string(body))
+		return ChatResult{}, fmt.Errorf("decode worker response: %w; body=%s", err, truncateErr(string(body)))
 	}
 	content := ""
 	reasoning := ""
@@ -1028,12 +1135,64 @@ func (e ChatExecutor) streamHTTPClient() *http.Client {
 }
 
 func (e ChatExecutor) ChatStreamProxy(ctx context.Context, req translate.ChatRequest, prefer, providerFilter string) (result StreamResult, returnErr error) {
-	loop := e.newRouteLoop(ctx, prefer, providerFilter, req)
-	defer func() { result.Routing = loop.routing.Source }()
-	payload, err := json.Marshal(qoder.BuildChatPayload(req, true))
+	return e.chatStreamProxy(ctx, req, nil, prefer, providerFilter, false)
+}
+
+// ChatStreamProxyNativeResponses sends the original Responses request to a
+// native-capable adapter. Once this path starts, retries remain native-only.
+func (e ChatExecutor) ChatStreamProxyNativeResponses(ctx context.Context, req translate.ChatRequest, native *translate.NativeResponsesRequest, prefer, providerFilter string) (result StreamResult, returnErr error) {
+	return e.chatStreamProxy(ctx, req, native, prefer, providerFilter, true)
+}
+
+func (e ChatExecutor) NativeResponsesNonStream(ctx context.Context, req translate.ChatRequest, native *translate.NativeResponsesRequest, prefer, providerFilter string) (result NativeResponseResult, returnErr error) {
+	upstream, err := e.ChatStreamProxyNativeResponses(ctx, req, native, prefer, providerFilter)
 	if err != nil {
-		return StreamResult{}, err
+		return NativeResponseResult{AccountID: upstream.AccountID, Provider: upstream.Provider, AttemptCount: upstream.AttemptCount, Routing: upstream.Routing, ReasoningLevel: upstream.ReasoningLevel}, err
 	}
+	if upstream.Response == nil || upstream.Response.Body == nil {
+		return NativeResponseResult{AccountID: upstream.AccountID, Provider: upstream.Provider, AttemptCount: upstream.AttemptCount, Routing: upstream.Routing, ReasoningLevel: upstream.ReasoningLevel}, fmt.Errorf("native responses upstream returned no body")
+	}
+	defer upstream.Response.Body.Close()
+	collected, err := translate.CollectResponses(upstream.Response.Body)
+	result = NativeResponseResult{
+		Response: collected.Response, AccountID: upstream.AccountID, Provider: upstream.Provider,
+		AttemptCount: upstream.AttemptCount, Routing: upstream.Routing, ReasoningLevel: upstream.ReasoningLevel,
+		FinishReason: collected.FinishReason, PromptTokens: collected.InputTokens,
+		OutputTokens: collected.OutputTokens, CachedTokens: collected.CachedTokens,
+	}
+	if err != nil {
+		e.ObserveStreamFailure(upstream.AccountID, err, req.Model)
+		return result, err
+	}
+	e.CommitSession(ctx, req, upstream.Routing, upstream.AccountID)
+	return result, nil
+}
+
+func (e ChatExecutor) HasNativeResponsesRoute(ctx context.Context, req translate.ChatRequest, prefer, providerFilter string) bool {
+	if e.Providers == nil {
+		return false
+	}
+	loop := e.newRouteLoop(ctx, prefer, providerFilter, req)
+	loop.eligible = func(item Item) bool {
+		adapter, ok := e.Providers.Get(itemProvider(item))
+		return ok && adapter.NativeResponses != nil
+	}
+	return e.Pool != nil && e.Pool.LenRoute(e.routeQuery(prefer, providerFilter, loop.regionFilter, req.Model, loop.allowed, nil, loop.eligible)) > 0
+}
+
+func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatRequest, native *translate.NativeResponsesRequest, prefer, providerFilter string, preferNativeResponses bool) (result StreamResult, returnErr error) {
+	loop := e.newRouteLoop(ctx, prefer, providerFilter, req)
+	if preferNativeResponses && native != nil && e.Providers == nil {
+		return StreamResult{}, providers.ErrUnsupported
+	}
+	if preferNativeResponses && native != nil {
+		loop.eligible = func(item Item) bool {
+			adapter, ok := e.Providers.Get(itemProvider(item))
+			return ok && adapter.NativeResponses != nil
+		}
+		loop.attempts = e.attemptsFor(loop.providerFilter, loop.regionFilter, req.Model, loop.allowed, loop.eligible)
+	}
+	defer func() { result.Routing = loop.routing.Source }()
 	startedAll := time.Now()
 	for loop.index < loop.attempts {
 		item, i, err := loop.pickNext(e, req.Model)
@@ -1044,8 +1203,9 @@ func (e ChatExecutor) ChatStreamProxy(ctx context.Context, req translate.ChatReq
 			}
 			return StreamResult{}, pickErr
 		}
-		if isInProcessItem(item) {
-			result, classified, err := e.chatInProcessStreamAttempt(ctx, item, req, i)
+		if isInProcessItem(item) || (e.qoderDirect(item) && !(preferNativeResponses && native != nil)) {
+			result, classified, err := e.chatInProcessStreamAttempt(ctx, item, req, native, i, preferNativeResponses)
+
 			if err == nil {
 				result.AttemptCount = i + 1
 				e.observeRouting(&loop.routing, result.AccountID)
@@ -1060,6 +1220,10 @@ func (e ChatExecutor) ChatStreamProxy(ctx context.Context, req translate.ChatReq
 				continue
 			}
 			return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, err
+		}
+		payload, err := json.Marshal(buildWorkerChatPayload(req, true))
+		if err != nil {
+			return StreamResult{}, err
 		}
 		headerAccount := loop.headerAccount(item, i)
 		httpReq, err := e.newWorkerRequest(ctx, item, payload, headerAccount)
@@ -1092,7 +1256,7 @@ func (e ChatExecutor) ChatStreamProxy(ctx context.Context, req translate.ChatReq
 			item.ID = account
 		}
 		if resp.StatusCode >= 300 {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxWorkerResponseBytes))
 			resp.Body.Close()
 			msg := strings.TrimSpace(string(body))
 			classified := classifyWorkerErr(resp, msg)

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
-import { Button, Description, Input, Label, ListBox, Modal, NumberField, Select, Skeleton, TextArea } from '@heroui/react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import gsap from 'gsap'
+import { Button, Input, Modal, NumberField, Skeleton, TextArea } from '@heroui/react'
 import { ArrowSquareOut, CaretLeft, CaretRight, CheckCircle, FileCode, Key, ShieldCheck, X } from '@phosphor-icons/react'
 import { BrandMark } from '@/components/BrandMark'
 import { ProviderMark } from '@/components/ProviderMark'
@@ -51,6 +52,9 @@ const labelKeys: Record<string, string> = {
   'workbuddy-global': 'accountTypeWorkBuddyGlobal',
   'trae-cn': 'accountTypeTraeCN',
   'devin-global': 'accountTypeDevinGlobal',
+  'command-global': 'accountTypeCommandGlobal',
+  'codex-global': 'accountTypeCodexGlobal',
+  'zhipu-cn': 'accountTypeZhipuCN',
 }
 
 const hintKeys: Record<string, string> = {
@@ -60,18 +64,18 @@ const hintKeys: Record<string, string> = {
   'workbuddy-global': 'accountTypeWorkBuddyGlobalHint',
   'trae-cn': 'accountTypeTraeCNHint',
   'devin-global': 'accountTypeDevinGlobalHint',
+  'command-global': 'accountTypeCommandGlobalHint',
+  'codex-global': 'accountTypeCodexGlobalHint',
+  'zhipu-cn': 'accountTypeZhipuCNHint',
 }
 
 function AccountTypeSkeleton({ ariaLabel }: { ariaLabel: string }) {
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" aria-busy="true" aria-label={ariaLabel}>
-      {Array.from({ length: 4 }, (_, index) => (
-        <div key={index} className="flex items-start gap-2.5 rounded-xl border border-separator px-3.5 py-3">
-          <Skeleton className="mt-0.5 size-[18px] shrink-0 rounded-lg" />
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <Skeleton className="h-4 w-28 rounded-lg" />
-            <Skeleton className="h-3 w-full rounded-lg" />
-          </div>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" aria-busy="true" aria-label={ariaLabel}>
+      {Array.from({ length: 6 }, (_, index) => (
+        <div key={index} className="flex items-center gap-2.5 rounded-xl border border-separator px-3 py-2.5">
+          <Skeleton className="size-7 shrink-0 rounded-lg" />
+          <Skeleton className="h-4 w-20 rounded-lg" />
         </div>
       ))}
     </div>
@@ -119,7 +123,6 @@ type Phase = 'idle' | 'busy' | 'polling' | 'done'
 
 const POLL_ATTEMPTS = 90
 const POLL_INTERVAL = 2000
-const TILE_LIMIT = 6
 
 export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const { t } = useI18n()
@@ -136,10 +139,15 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const [proxyUrl, setProxyUrl] = useState('')
   const [pat, setPat] = useState('')
   const [json, setJson] = useState('')
+  const [zhipuMode, setZhipuMode] = useState<'payg' | 'coding'>('payg')
+  const [zhipuKey, setZhipuKey] = useState('')
+  const [zhipuOrganization, setZhipuOrganization] = useState('')
+  const [zhipuProject, setZhipuProject] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('')
   const [authUrl, setAuthUrl] = useState('')
   const [callbackUrl, setCallbackUrl] = useState('')
+  const stepBody = useRef<HTMLDivElement>(null)
   const createdId = useRef<string>('')
   const pollTimer = useRef<number | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -180,8 +188,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const typesReady = Boolean(activeOption) && !typesLoading
   const showPatTab = activeOption?.descriptor.capabilities?.pat_login !== false
   const showImportTab = activeOption?.descriptor.capabilities?.import_export !== false
+  // Command Code has no browser login (a pasted user_… key is the only auth),
+  // so the wizard opens on the PAT tab instead of the browser tab.
+  const hasBrowserLogin = activeOption?.descriptor.capabilities?.browser_login !== false
   const showDropSystem = activeOption?.provider === 'workbuddy'
-  const showCallbackPaste = activeOption?.provider === 'trae' || activeOption?.provider === 'devin'
+  const showCallbackPaste = activeOption?.provider === 'trae' || activeOption?.provider === 'devin' || activeOption?.provider === 'codex'
   const busy = phase === 'busy' || phase === 'polling'
   const settingsLocked = Boolean(createdId.current) || busy
   const isDone = phase === 'done'
@@ -191,6 +202,14 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     if (tab === 'pat' && !showPatTab) setTab('browser')
     if (tab === 'import' && !showImportTab) setTab('browser')
   }, [showImportTab, showPatTab, tab])
+
+  useEffect(() => {
+    // Providers without a browser login (e.g. Command Code) must not land on an
+    // empty browser tab; send the operator to the paste-key tab.
+    if (hasBrowserLogin) return
+    if (showPatTab) setTab('pat')
+    else if (showImportTab) setTab('import')
+  }, [hasBrowserLogin, showImportTab, showPatTab])
 
   function parsedMaxInFlight() {
     if (!Number.isInteger(maxInFlight) || maxInFlight < 1 || maxInFlight > 32) return 4
@@ -225,6 +244,10 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     setProxyUrl('')
     setPat('')
     setJson('')
+    setZhipuMode('payg')
+    setZhipuKey('')
+    setZhipuOrganization('')
+    setZhipuProject('')
     setAdvancedOpen(false)
     setPhase('idle')
     setMessage('')
@@ -244,9 +267,30 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     onClose()
   }
 
-  function goLogin(next: TabKey) {
+  useLayoutEffect(() => {
+    const body = stepBody.current
+    if (!body || !isOpen) return
+    const context = gsap.context(() => {
+      const media = gsap.matchMedia()
+      media.add('(prefers-reduced-motion: reduce)', () => {
+        gsap.set(body, { autoAlpha: 1, y: 0 })
+      })
+      media.add('(prefers-reduced-motion: no-preference)', () => {
+        gsap.fromTo(
+          body,
+          { autoAlpha: 0, y: 12 },
+          { autoAlpha: 1, y: 0, duration: 0.34, ease: 'power3.out', overwrite: true },
+        )
+      })
+    }, body)
+    return () => context.revert()
+  }, [isOpen, step])
+
+  function chooseProvider(next: string) {
     if (busy || !typesReady) return
-    setTab(next)
+    const option = providerOptions.find((item) => item.id === next)
+    setAccountType(next)
+    setTab(option?.provider === 'zhipu' ? 'pat' : 'browser')
     setMessage('')
     setStep('login')
   }
@@ -316,6 +360,39 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     }
   }
 
+  async function runZhipu() {
+    const key = zhipuKey.trim()
+    if (!key) { setMessage(t('zhipuKeyRequired')); return }
+    if (!activeOption) { setMessage(t('accountTypeHint')); return }
+    setMessage('')
+    try {
+      setPhase('busy')
+      const options = accountOptions()
+      await importAccount({
+        format: 'zhipu-key-v1',
+        api_key: key,
+        mode: zhipuMode,
+        organization: zhipuMode === 'coding' ? zhipuOrganization.trim() : '',
+        project: zhipuMode === 'coding' ? zhipuProject.trim() : '',
+        name: name.trim() || t('accountTypeZhipuCN'),
+        enabled: true,
+        provider: activeOption.provider,
+        region: activeOption.region,
+        max_inflight: options.max_inflight,
+        priority: options.priority,
+        drop_system_prompt: options.drop_system_prompt,
+        proxy_url: options.proxy_url,
+      })
+      setPhase('done')
+      setMessage(t('wizardAccountReady'))
+      onAdded()
+      window.setTimeout(finishAndClose, 700)
+    } catch (error) {
+      setPhase('idle')
+      setMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function runPat() {
     const token = pat.trim()
     if (!token) { setMessage(t('pastePatFirst')); return }
@@ -357,6 +434,7 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
       if (activeOption.descriptor.id === 'workbuddy') bundle.format = 'workbuddy-oauth-v1'
       else if (activeOption.descriptor.id === 'trae') bundle.format = 'trae-oauth-v1'
       else if (activeOption.descriptor.id === 'devin') bundle.format = 'devin-session-v1'
+      else if (activeOption.descriptor.id === 'command') bundle.format = 'command-key-v1'
       else bundle.format = 'qoder-native-v1'
     }
     try {
@@ -396,7 +474,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   }
 
   const tabPending = (key: TabKey) => busy && tab === key
-  const useTypeSelect = providerOptions.length > TILE_LIMIT
   const typeOptions = providerOptions.map((option) => ({
     value: option.id,
     label: optionLabel(option, t),
@@ -405,8 +482,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
     disabled: settingsLocked,
   }))
 
+  const isZhipu = activeOption?.provider === 'zhipu'
   const methodOptions = [
-    { value: 'browser' as const, label: t('tabBrowser'), icon: <ShieldCheck size={16} /> },
+    activeOption?.descriptor.capabilities?.browser_login !== false
+      ? { value: 'browser' as const, label: t('tabBrowser'), icon: <ShieldCheck size={16} /> }
+      : null,
     showPatTab ? { value: 'pat' as const, label: t('tabPat'), icon: <Key size={16} /> } : null,
     showImportTab ? { value: 'import' as const, label: t('tabImport'), icon: <FileCode size={16} /> } : null,
   ].filter(Boolean) as Array<{ value: TabKey; label: string; icon: React.ReactNode }>
@@ -414,94 +494,60 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const tabLead = tab === 'browser'
     ? t('wizardBrowserLead')
     : tab === 'pat'
-      ? t(activeOption?.region === 'cn' && activeOption?.provider === 'qoder' ? 'wizardPatLeadCN' : 'wizardPatLead')
+      ? t(activeOption?.provider === 'command'
+          ? 'wizardPatLeadCommand'
+          : activeOption?.region === 'cn' && activeOption?.provider === 'qoder'
+            ? 'wizardPatLeadCN'
+            : 'wizardPatLead')
       : t('wizardImportLead')
 
   return (
     <Modal.Root isOpen={isOpen} onOpenChange={(next: boolean) => { if (!next) close() }}>
       <Modal.Backdrop variant="blur" isDismissable={!busy}>
-        <Modal.Container size="lg" scroll="inside">
+        <Modal.Container size="lg" scroll="inside" className="sm:max-w-4xl">
           <Modal.Dialog>
-            <Modal.Header className="items-start justify-between gap-4 px-5 pt-5">
+            <Modal.Header className="relative items-center justify-center px-12 pt-5 text-center">
               <div className="min-w-0">
                 <Modal.Heading className="text-lg font-semibold tracking-[-0.01em]">{t('addAccountTitle')}</Modal.Heading>
                 <p className="mt-1 text-xs font-normal leading-5 text-muted">
                   {step === 'method' ? t('addAccountDesc') : (hint || t('addAccountDesc'))}
                 </p>
               </div>
-              <Modal.CloseTrigger aria-label={t('close')} className="grid size-8 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-surface-secondary hover:text-foreground"><X size={16} /></Modal.CloseTrigger>
+              <Modal.CloseTrigger aria-label={t('close')} className="absolute right-4 top-4 grid size-8 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-surface-secondary hover:text-foreground"><X size={16} /></Modal.CloseTrigger>
             </Modal.Header>
-            <Modal.Body className="px-5 pb-2">
+            <Modal.Body className="px-6 pb-2">
+              <div ref={stepBody}>
               {step === 'method' ? (
                 <>
                   <section className="space-y-2.5">
                     {typesLoading ? (
-                      <>
-                        <span className="text-sm font-medium text-muted">{t('accountType')}</span>
-                        <AccountTypeSkeleton ariaLabel={t('accountType')} />
-                      </>
+                      <AccountTypeSkeleton ariaLabel={t('accountType')} />
                     ) : !typesReady ? (
-                      <>
-                        <span className="text-sm font-medium text-muted">{t('accountType')}</span>
-                        <p className="rounded-lg border border-separator bg-surface-secondary/45 px-3.5 py-3 text-xs leading-5 text-muted">{t('accountTypeHint')}</p>
-                      </>
-                    ) : useTypeSelect ? (
-                      <Select
-                        fullWidth
-                        aria-label={t('accountType')}
-                        value={accountType}
-                        isDisabled={settingsLocked}
-                        onChange={(next) => {
-                          if (typeof next === 'string' && next && !settingsLocked) setAccountType(next)
-                        }}
-                      >
-                        <Label className="text-sm font-medium text-muted">{t('accountType')}</Label>
-                        <Select.Trigger className="items-center">
-                          <Select.Value className="min-w-0 truncate">
-                            {({ defaultChildren, isPlaceholder }) => {
-                              const selected = typeOptions.find((option) => option.value === accountType)
-                              if (isPlaceholder || !selected) return defaultChildren
-                              return (
-                                <span className="flex min-w-0 items-center gap-2">
-                                  <span className="grid size-5 shrink-0 place-items-center">{selected.icon}</span>
-                                  <span className="truncate">{selected.label}</span>
-                                </span>
-                              )
-                            }}
-                          </Select.Value>
-                          <Select.Indicator />
-                        </Select.Trigger>
-                        <Select.Popover className="max-h-72">
-                          <ListBox>
-                            {typeOptions.map((option) => (
-                              <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
-                                <span className="grid size-5 shrink-0 place-items-center">{option.icon}</span>
-                                <div className="min-w-0 flex-1">
-                                  <Label className="block truncate">{option.label}</Label>
-                                  {option.hint ? <Description className="truncate">{option.hint}</Description> : null}
-                                </div>
-                                <ListBox.ItemIndicator />
-                              </ListBox.Item>
-                            ))}
-                          </ListBox>
-                        </Select.Popover>
-                      </Select>
+                      <p className="rounded-lg border border-separator bg-surface-secondary/45 px-3.5 py-3 text-xs leading-5 text-muted">{t('accountTypeHint')}</p>
                     ) : (
-                      <>
-                        <span className="text-sm font-medium text-muted">{t('accountType')}</span>
-                        <OptionTiles
-                          ariaLabel={t('accountType')}
-                          columns={2}
-                          value={accountType}
-                          onChange={(next) => { if (!settingsLocked) setAccountType(next) }}
-                          options={typeOptions}
-                        />
-                      </>
+                      <OptionTiles
+                        ariaLabel={t('accountType')}
+                        columns={2}
+                        value=""
+                        onChange={chooseProvider}
+                        options={typeOptions}
+                      />
                     )}
-                    {typesReady && hint ? <p className="min-h-5 text-xs leading-5 text-muted">{hint}</p> : null}
                   </section>
-
-                  <section className="mt-5 space-y-3">
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3 rounded-lg border border-separator bg-surface-secondary/45 px-3 py-2.5">
+                    <span className="shrink-0"><ProviderMark provider={activeOption?.provider} size={18} /></span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-foreground">{activeOption ? optionLabel(activeOption, t) : t('accountType')}</div>
+                      <div className="truncate text-[11px] text-muted">{hint}</div>
+                    </div>
+                    <Button size="sm" variant="ghost" onPress={() => setStep('method')} isDisabled={busy || Boolean(createdId.current)}>
+                      <CaretLeft size={12} />{t('wizardBack')}
+                    </Button>
+                  </div>
+                  <div className="mt-4 space-y-3">
                     <FormRow label={t('accountName')}>
                       <Input
                         value={name}
@@ -509,6 +555,7 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                         placeholder={t('wizardNamePh')}
                         aria-label={t('accountName')}
                         disabled={settingsLocked}
+                        autoFocus
                       />
                     </FormRow>
                     <button
@@ -579,27 +626,47 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                         ) : null}
                       </div>
                     ) : null}
-                  </section>
-
-                  <div className="mt-5">
-                    <Button className="w-full" isDisabled={!typesReady} onPress={() => goLogin(tab)}>
-                      {t('wizardContinue')}
-                    </Button>
                   </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center gap-3 rounded-lg border border-separator bg-surface-secondary/45 px-3 py-2.5">
-                    <span className="shrink-0"><ProviderMark provider={activeOption?.provider} size={18} /></span>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-foreground">{activeOption ? optionLabel(activeOption, t) : t('accountType')}</div>
-                      <div className="truncate text-[11px] text-muted">{name.trim() || t('account')}</div>
+
+                  {isZhipu ? (
+                    <div className="mt-4 flex flex-col gap-4">
+                      <div className="space-y-2">
+                        <span className="text-sm font-medium text-muted">{t('zhipuAccountMode')}</span>
+                        <OptionTiles
+                          ariaLabel={t('zhipuAccountMode')}
+                          columns={2}
+                          value={zhipuMode}
+                          onChange={(next) => { if (!busy) setZhipuMode(next) }}
+                          options={[
+                            { value: 'payg', label: t('zhipuModePayg'), hint: t('zhipuModePaygHint'), disabled: busy },
+                            { value: 'coding', label: t('zhipuModeCoding'), hint: t('zhipuModeCodingHint'), disabled: busy },
+                          ]}
+                        />
+                      </div>
+                      <FormRow label={t('zhipuApiKey')}>
+                        <Input type="password" value={zhipuKey} onChange={(event) => setZhipuKey(event.target.value)} placeholder={t('zhipuApiKeyPh')} aria-label={t('zhipuApiKey')} disabled={busy} />
+                      </FormRow>
+                      {zhipuMode === 'coding' ? (
+                        <>
+                          <FormRow label={t('zhipuOrganization')}>
+                            <Input value={zhipuOrganization} onChange={(event) => setZhipuOrganization(event.target.value)} placeholder={t('zhipuOrganizationPh')} aria-label={t('zhipuOrganization')} disabled={busy} />
+                          </FormRow>
+                          <FormRow label={t('zhipuProject')}>
+                            <Input value={zhipuProject} onChange={(event) => setZhipuProject(event.target.value)} placeholder={t('zhipuProjectPh')} aria-label={t('zhipuProject')} disabled={busy} />
+                          </FormRow>
+                        </>
+                      ) : null}
+                      {message ? (
+                        <p className="flex items-center gap-2 rounded-lg border border-separator bg-surface-secondary px-3 py-2 text-xs">{isDone ? <CheckCircle size={14} className="shrink-0 text-success" /> : null}<span className={isDone ? 'font-medium text-foreground' : 'text-muted'}>{message}</span></p>
+                      ) : null}
+                      <Button className="w-full" isPending={phase === 'busy'} onPress={() => void runZhipu()} isDisabled={isDone}>
+                        {isDone ? <><CheckCircle size={15} />{t('wizardAccountReady')}</> : <><Key size={15} />{t('zhipuCreate')}</>}
+                      </Button>
                     </div>
-                    <Button size="sm" variant="ghost" onPress={() => setStep('method')} isDisabled={busy || Boolean(createdId.current)}>
-                      <CaretLeft size={12} />{t('wizardBack')}
-                    </Button>
-                  </div>
+                  ) : null}
 
+                  {isZhipu ? null : (
+                    <>
                   <FilterToggle
                     className="mt-3"
                     value={tab}
@@ -686,8 +753,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                       </>
                     )}
                   </div>
+                    </>
+                  )}
                 </>
               )}
+              </div>
             </Modal.Body>
             <Modal.Footer className="justify-end px-5 pb-5">
               <Button variant="ghost" onPress={close} isDisabled={busy}>{t('cancel')}</Button>

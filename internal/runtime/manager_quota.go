@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
@@ -19,7 +20,9 @@ func (m *Manager) fetchProviderQuota(ctx context.Context, accountID string, prob
 		return
 	}
 	info, err := prober.Quota(ctx, accountID)
-	if err != nil || info == nil {
+	if err != nil || info == nil || !quotaInfoHasWindows(info) {
+		// An empty snapshot is "not fetched yet", not a zero balance. Saving it
+		// makes the account card render 0/0 and hides a later real reading.
 		return
 	}
 	unit := info.Unit
@@ -44,6 +47,9 @@ func (m *Manager) fetchProviderQuota(ctx context.Context, accountID string, prob
 		quota.ExpiringRemain = info.ExpiringRemain
 		quota.Packages = quotaPackagesFromInfo(info.Packages)
 	}
+	if info.ProviderID == "codex" {
+		quota.Plan = strings.TrimSpace(info.Plan)
+	}
 	m.persistQuota(ctx, accountID, quota)
 }
 
@@ -67,6 +73,16 @@ func quotaPackagesFromInfo(packages []providers.QuotaPackage) []accounts.QuotaPa
 		})
 	}
 	return out
+}
+
+func quotaInfoHasWindows(info *providers.QuotaInfo) bool {
+	if info == nil {
+		return false
+	}
+	if len(info.Windows) > 0 || len(info.Packages) > 0 {
+		return true
+	}
+	return info.Total > 0 || info.Used > 0 || info.Remaining > 0 || info.Percentage > 0 || info.Exceeded
 }
 
 func quotaWindowsFromInfo(windows []providers.QuotaWindow) []accounts.QuotaWindow {
