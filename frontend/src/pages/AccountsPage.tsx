@@ -205,11 +205,11 @@ export function AccountsPage() {
     }
   }
 
-  async function onDeviceLogin(id: string) {
+  async function onDeviceLogin(id: string, loginMethod?: string) {
     setAuthPanelId(id)
     await run(id, 'device', async () => {
       setNoteById((current) => ({ ...current, [id]: t('wizardStartingSession') }))
-      const output = await startDeviceLogin(id)
+      const output = await startDeviceLogin(id, loginMethod)
       if (output.authUrl) {
         setUrlById((current) => ({ ...current, [id]: output.authUrl || '' }))
       }
@@ -320,7 +320,7 @@ export function AccountsPage() {
     })
   }
 
-  async function onSaveSettings(id: string, input: { name: string; max_inflight: number; priority: number; proxy_url?: string; checkin_time?: string; drop_system_prompt?: boolean }) {
+  async function onSaveSettings(id: string, input: { name: string; max_inflight: number; priority: number; proxy_url?: string; checkin_time?: string; drop_system_prompt?: boolean; model_aliases?: Record<string, string>; enabled_models?: string[]; set_model_routing?: boolean }) {
     if (!id) throw new Error(t('accountNameRequired'))
     setNameById((current) => ({ ...current, [id]: input.name }))
     setInflightById((current) => ({ ...current, [id]: input.max_inflight }))
@@ -494,7 +494,7 @@ export function AccountsPage() {
             callbackUrl={callbackById[account.id] || ''}
             onCallbackChange={(value) => setCallbackById((current) => ({ ...current, [account.id]: value }))}
             onSubmitCallback={() => void onCallback(account.id)}
-            onDeviceLogin={() => void onDeviceLogin(account.id)}
+            onDeviceLogin={(loginMethod) => void onDeviceLogin(account.id, loginMethod)}
             onPatLogin={() => void onPat(account.id)}
             onExport={() => void onExport(account.id)}
             onRefresh={() => void onRefreshAccount(account.id)}

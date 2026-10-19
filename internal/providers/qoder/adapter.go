@@ -352,6 +352,41 @@ func CatalogIDsFromInfos(models []providers.ModelInfo) []string {
 	return ids
 }
 
+// NativeCatalogIDsFromInfos maps each public model ID onto the key Qoder's
+// gateway actually routes, taken from the catalog's mapped_key. Models whose
+// native key is the public ID itself are left out: they need no mapping, and a
+// self-mapping entry would be redundant on every request.
+func NativeCatalogIDsFromInfos(models []providers.ModelInfo) map[string]string {
+	out := make(map[string]string)
+	for _, model := range models {
+		public := strings.TrimSpace(model.PublicModel)
+		native := strings.TrimSpace(model.NativeModel)
+		if public == "" || native == "" {
+			continue
+		}
+		if accounts.CanonicalModelID(public) == accounts.CanonicalModelID(native) {
+			continue
+		}
+		out[accounts.CanonicalModelID(public)] = native
+	}
+	return out
+}
+
+// FreeCatalogIDsFromInfos returns the same id spellings CatalogIDsFromInfos
+// produces, restricted to the models Qoder prices at zero. A free model spends
+// no credits, so the routing pool must know about it to keep serving it from an
+// account whose paid quota is exhausted.
+func FreeCatalogIDsFromInfos(models []providers.ModelInfo) []string {
+	var ids []string
+	for _, model := range models {
+		if !model.Free {
+			continue
+		}
+		ids = append(ids, model.PublicModel, model.NativeModel, model.DisplayName)
+	}
+	return ids
+}
+
 func (c *Client) Probe(ctx context.Context, accountID string) (providers.AccountHealth, error) {
 	workerURL, err := c.lookup(accountID)
 	if err != nil {
@@ -639,12 +674,16 @@ func decodeChatOutcome(fallbackModel string, body []byte) (providers.ChatOutcome
 	var parsed struct {
 		Model string `json:"model"`
 		Usage struct {
-			PromptTokens     int      `json:"prompt_tokens"`
-			CompletionTokens int      `json:"completion_tokens"`
-			CacheReadTokens  *int     `json:"cache_read_tokens"`
-			CacheWriteTokens *int     `json:"cache_write_tokens"`
-			Source           string   `json:"source"`
-			Credits          *float64 `json:"credits"`
+			PromptTokens         int      `json:"prompt_tokens"`
+			CompletionTokens     int      `json:"completion_tokens"`
+			CacheReadTokens      *int     `json:"cache_read_tokens"`
+			CacheWriteTokens     *int     `json:"cache_write_tokens"`
+			PromptCacheHitTokens *int     `json:"prompt_cache_hit_tokens"`
+			Source               string   `json:"source"`
+			Credits              *float64 `json:"credits"`
+			PromptDetails        struct {
+				CachedTokens *int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
@@ -658,11 +697,18 @@ func decodeChatOutcome(fallbackModel string, body []byte) (providers.ChatOutcome
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return providers.ChatOutcome{}, fmt.Errorf("decode worker response: %w", err)
 	}
+	cacheRead := parsed.Usage.CacheReadTokens
+	if cacheRead == nil {
+		cacheRead = parsed.Usage.PromptDetails.CachedTokens
+	}
+	if cacheRead == nil {
+		cacheRead = parsed.Usage.PromptCacheHitTokens
+	}
 	outcome := providers.ChatOutcome{
 		Model:            parsed.Model,
 		PromptTokens:     parsed.Usage.PromptTokens,
 		CompletionTokens: parsed.Usage.CompletionTokens,
-		CacheReadTokens:  parsed.Usage.CacheReadTokens,
+		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: parsed.Usage.CacheWriteTokens,
 		UsageSource:      parsed.Usage.Source,
 		Credits:          parsed.Usage.Credits,

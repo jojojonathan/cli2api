@@ -117,6 +117,23 @@ func allowedProvidersFrom(ctx context.Context) []string {
 	return providers
 }
 
+type regionFilterKey struct{}
+
+func WithRegionFilter(ctx context.Context, region string) context.Context {
+	if strings.TrimSpace(region) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, regionFilterKey{}, region)
+}
+
+func regionFilterFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	region, _ := ctx.Value(regionFilterKey{}).(string)
+	return region
+}
+
 func requestContextDone(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
@@ -311,6 +328,21 @@ func (e ChatExecutor) pick(requestID, prefer, providerFilter, regionFilter, publ
 				Cooldown: 5 * time.Second, RetryAfter: 5 * time.Second, Failover: true,
 			}, nil)
 		}
+		// No eligible account is ready right now. Before blaming the model or
+		// reporting "no accounts available", check whether accounts that could
+		// serve this model are blocked only by an exhausted quota. A stale or
+		// genuinely exhausted snapshot leaves no routing hint, so without this
+		// the client sees a generic "no accounts available" instead of a quota
+		// error that explains the real cause.
+		if _, ok := e.Pool.QuotaBlockedForModel(query); ok {
+			retryAfter := NextLocalMidnightCooldown()
+			return Item{}, NewExecutionError(Classified{
+				Kind: accounts.KindQuota, Status: 429, Code: "insufficient_quota",
+				Type: "insufficient_quota", Failover: false,
+				Cooldown: retryAfter, RetryAfter: retryAfter,
+				Message: quotaBlockedMessage(publicModel),
+			}, nil)
+		}
 		if publicModel != "" && publicModel != "auto" {
 			unfiltered := query
 			unfiltered.PublicModel = ""
@@ -410,6 +442,13 @@ func logTime(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339)
+}
+
+func quotaBlockedMessage(publicModel string) string {
+	if strings.TrimSpace(publicModel) != "" {
+		return fmt.Sprintf("all accounts that can serve %s are out of quota", publicModel)
+	}
+	return "all accounts are out of quota"
 }
 
 func coolingPickError(item Item, publicModel string, retryAfter time.Duration) error {
@@ -584,7 +623,7 @@ func (e ChatExecutor) markClassified(id string, c Classified, model string) {
 		return
 	}
 	if c.Model == "" && c.Kind == accounts.KindRateLimit {
-		c.Model = model
+		c.Model = e.cooldownModel(id, model)
 	}
 	e.Pool.MarkClassified(id, c)
 }
@@ -596,7 +635,20 @@ func (e ChatExecutor) markOK(id, model string) {
 	if e.Pool == nil {
 		return
 	}
-	e.Pool.MarkOK(id, model)
+	e.Pool.MarkOK(id, e.cooldownModel(id, model))
+}
+
+// cooldownModel records the account's real catalog model when the client
+// used that account's alias, so the alias and the real name share one cooldown.
+func (e ChatExecutor) cooldownModel(id, model string) string {
+	if e.Pool == nil || id == "" {
+		return model
+	}
+	item, ok := e.Pool.ByID(id)
+	if !ok {
+		return model
+	}
+	return AccountModelID(item, model)
 }
 
 func (e ChatExecutor) recordAttempt(ctx context.Context, attempt accounts.RequestAttempt) {
@@ -702,12 +754,19 @@ type routeLoop struct {
 func (e ChatExecutor) newRouteLoop(ctx context.Context, prefer, providerFilter string, req translate.ChatRequest) routeLoop {
 	prefer, providerFilter, regionFilter, routing := e.prepareRouting(ctx, prefer, providerFilter, req)
 	allowed := allowedProvidersFrom(ctx)
-	// A key whose grants narrow the selected family to exactly one region
-	// pre-seeds the region filter: scheduling never even considers accounts
-	// of other regions — including a pin to an out-of-grant account (the
-	// grant overrides the pinned account's region, so the pin falls back
-	// into the granted region) and every failover hop.
-	if providerFilter != "" {
+	// A model-name region prefix (e.g. "workbuddy-cn/model") sets an explicit
+	// region that overrides sticky-session and pin-derived regions. It
+	// coexists with key grants: routeBaseMatches enforces both filters
+	// independently, so a prefix that conflicts with a grant yields no
+	// candidates and a clean error.
+	if modelRegion := regionFilterFromContext(ctx); modelRegion != "" {
+		regionFilter = modelRegion
+	} else if providerFilter != "" {
+		// A key whose grants narrow the selected family to exactly one region
+		// pre-seeds the region filter: scheduling never even considers accounts
+		// of other regions — including a pin to an out-of-grant account (the
+		// grant overrides the pinned account's region, so the pin falls back
+		// into the granted region) and every failover hop.
 		if granted, narrowed := keyGrantedSingleRegion(providerFilter, allowed); narrowed {
 			regionFilter = granted
 		}
@@ -910,6 +969,7 @@ func (e ChatExecutor) ChatNonStream(ctx context.Context, req translate.ChatReque
 // WorkBuddy still needs a leading system slot after the strip (code 11128);
 // the adapter inserts an empty placeholder, this helper only drops caller text.
 func sanitizeForItem(item Item, req translate.ChatRequest) translate.ChatRequest {
+	req.Model = AccountModelID(item, req.Model)
 	if native := NativeModelID(item, req.Model); native != "" {
 		req.Model = native
 	}
@@ -967,6 +1027,7 @@ func (e ChatExecutor) chatInProcessNonStreamAttempt(ctx context.Context, item It
 		CompletionTokens: outcome.CompletionTokens,
 		CacheReadTokens:  outcome.CacheReadTokens,
 		CacheWriteTokens: outcome.CacheWriteTokens,
+		CachedTokens:     outcome.CacheReadTokens,
 		UsageSource:      outcome.UsageSource,
 		ConsumedCredits:  outcome.Credits,
 		AccountID:        item.ID,
@@ -993,7 +1054,7 @@ func (e ChatExecutor) chatInProcessStreamAttempt(ctx context.Context, item Item,
 	nativeResponses := false
 	if preferNativeResponses && native != nil && adapter.NativeResponses != nil {
 		options := providers.RequestOptions{
-			Model:            NativeModelID(item, req.Model),
+			Model:            NativeModelID(item, AccountModelID(item, req.Model)),
 			DropSystemPrompt: item.DropSystemPrompt && itemProvider(item) != "qoder",
 		}
 		resp, resolved, err = adapter.NativeResponses.ResponsesStream(ctx, item.ID, native, options)
@@ -1061,13 +1122,14 @@ func decodeChatResult(req translate.ChatRequest, body []byte) (ChatResult, error
 	var parsed struct {
 		Model string `json:"model"`
 		Usage struct {
-			PromptTokens     int      `json:"prompt_tokens"`
-			CompletionTokens int      `json:"completion_tokens"`
-			CacheReadTokens  *int     `json:"cache_read_tokens"`
-			CacheWriteTokens *int     `json:"cache_write_tokens"`
-			Source           string   `json:"source"`
-			Credits          *float64 `json:"credits"`
-			PromptDetails    struct {
+			PromptTokens         int      `json:"prompt_tokens"`
+			CompletionTokens     int      `json:"completion_tokens"`
+			CacheReadTokens      *int     `json:"cache_read_tokens"`
+			CacheWriteTokens     *int     `json:"cache_write_tokens"`
+			PromptCacheHitTokens *int     `json:"prompt_cache_hit_tokens"`
+			Source               string   `json:"source"`
+			Credits              *float64 `json:"credits"`
+			PromptDetails        struct {
 				CachedTokens *int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
@@ -1105,6 +1167,17 @@ func decodeChatResult(req translate.ChatRequest, body []byte) (ChatResult, error
 	if source == "" {
 		source = "estimate"
 	}
+	cacheRead := parsed.Usage.CacheReadTokens
+	if cacheRead == nil {
+		cacheRead = parsed.Usage.PromptDetails.CachedTokens
+	}
+	if cacheRead == nil {
+		cacheRead = parsed.Usage.PromptCacheHitTokens
+	}
+	cachedTokens := parsed.Usage.PromptDetails.CachedTokens
+	if cachedTokens == nil {
+		cachedTokens = cacheRead
+	}
 	return ChatResult{
 		Model:            model,
 		Content:          content,
@@ -1113,9 +1186,9 @@ func decodeChatResult(req translate.ChatRequest, body []byte) (ChatResult, error
 		FinishReason:     finishReason,
 		PromptTokens:     parsed.Usage.PromptTokens,
 		CompletionTokens: parsed.Usage.CompletionTokens,
-		CacheReadTokens:  parsed.Usage.CacheReadTokens,
+		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: parsed.Usage.CacheWriteTokens,
-		CachedTokens:     parsed.Usage.PromptDetails.CachedTokens,
+		CachedTokens:     cachedTokens,
 		UsageSource:      source,
 		Credits:          parsed.Usage.Credits,
 	}, nil
