@@ -46,23 +46,6 @@ func catalogModel(model catalogModelEntry) providers.ModelInfo {
 	if len(options) == 0 && defaultLevel != "" {
 		options = []string{defaultLevel}
 	}
-
-	// Workaround: CN catalog often declares only "medium" for glm-5.x without
-	// supportedEfforts, but upstream actually accepts low/medium/high/max. Expand
-	// the options to match what the upstream endpoint really supports.
-	if strings.Contains(model.ID, "glm-5.") && len(options) == 1 && options[0] == "medium" {
-		options = []string{"low", "medium", "high", "max"}
-		if defaultLevel == "" || defaultLevel != "medium" {
-			defaultLevel = "medium"
-		}
-	}
-
-	// GLM-5.3 系列实际支持 low/high/max，但 CN 目录只声明了 medium。
-	// 根据 upstream 实测和 zhipu/payload.go 注释，glm-5.3 接受 low/high/max。
-	if strings.HasPrefix(strings.ToLower(model.ID), "glm-5.3") {
-		options = []string{"low", "medium", "high", "max"}
-		defaultLevel = "medium"
-	}
 	if defaultLevel == "" && len(options) > 0 {
 		defaultLevel = options[0]
 	} else if defaultLevel != "" && !containsLevel(options, defaultLevel) {
