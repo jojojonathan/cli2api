@@ -33,6 +33,25 @@ func TestClampReasoningLevelDropsUnknownAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestClampReasoningLevelPinsMaxToHighestDeclaredTier(t *testing.T) {
+	// trae deepseek-v4.1-flash declares light/high/extra_high with default
+	// high; a "max" request must land on the top declared tier, not the
+	// catalog default.
+	caps := providers.ModelCapabilities{ReasoningOptions: []string{"low", "high", "xhigh"}, ReasoningDefault: "high"}
+	if got := clampReasoningLevel("max", caps); got != "xhigh" {
+		t.Fatalf("clamp=%q", got)
+	}
+	// Models that do declare max keep it untouched.
+	withMax := providers.ModelCapabilities{ReasoningOptions: []string{"low", "high", "max"}, ReasoningDefault: "max"}
+	if got := clampReasoningLevel("max", withMax); got != "max" {
+		t.Fatalf("clamp=%q", got)
+	}
+	// Non-max levels keep the fallback-to-default behavior.
+	if got := clampReasoningLevel("medium", caps); got != "high" {
+		t.Fatalf("clamp=%q", got)
+	}
+}
+
 func TestApplySoloChatFieldsMapsOpenAIAndStripsQoderKeys(t *testing.T) {
 	on := true
 	req := translate.ChatRequest{

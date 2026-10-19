@@ -53,7 +53,23 @@ func requestedReasoningLevel(req translate.ChatRequest) string {
 }
 
 func clampReasoningLevel(level string, caps providers.ModelCapabilities) string {
-	return providers.ResolveReasoningLevel(level, caps)
+	resolved := providers.ResolveReasoningLevel(level, caps)
+	if normalizeReasoningLevel(level) != "max" || resolved == "max" || len(caps.ReasoningOptions) == 0 {
+		return resolved
+	}
+	// "max" is not a declared tier on this model (trae catalogs top out at
+	// extra_high with a lower default, e.g. deepseek-v4.1-flash declares
+	// light/high/extra_high with default high): pin it to the highest
+	// declared tier instead of the catalog default so a max request still
+	// means maximum thinking.
+	for _, top := range []string{"xhigh", "high", "medium", "low", "none"} {
+		for _, option := range caps.ReasoningOptions {
+			if option == top {
+				return option
+			}
+		}
+	}
+	return resolved
 }
 
 func applySoloChatFields(obj map[string]any, req translate.ChatRequest, maxMode bool, storedLevel string, caps providers.ModelCapabilities) {
