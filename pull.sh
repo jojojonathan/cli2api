@@ -69,7 +69,9 @@ if [ -n "${CLI2API_TARGET:-}" ]; then
     { echo "!! CLI2API_TARGET '${CLI2API_TARGET}' does not resolve to a commit" >&2; exit 1; }
   TARGET_DESC="${CLI2API_TARGET}"
 else
-  TARGET="$(git describe --abbrev=0 --match='v*' "${UPSTREAM}" 2>/dev/null)" || true
+  # --tags: release tags on this repo are lightweight; without it describe
+  # only considers annotated tags and falls back to ancient history.
+  TARGET="$(git describe --abbrev=0 --tags --match='v*' "${UPSTREAM}" 2>/dev/null)" || true
   if [ -z "${TARGET}" ]; then
     echo "!! no v* tag found on '${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}', pin one with CLI2API_TARGET" >&2
     exit 1
