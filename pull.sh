@@ -16,6 +16,9 @@
 #   CLI2API_ORIGIN_REMOTE    (default: origin)
 #   CLI2API_PUSH             0 to keep the merge local without pushing
 set -euo pipefail
+# Surface any unexpected set -e death with the failing line and exit code,
+# instead of exiting silently (e.g. exit 141 from a SIGPIPE'd pipeline).
+trap 'echo "!! pull.sh aborted at line ${LINENO} (exit $?)" >&2' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT}"
@@ -55,7 +58,9 @@ if [ "${NEW_COUNT}" -eq 0 ]; then
 fi
 
 echo "==> ${NEW_COUNT} new upstream commits:"
-git log --oneline "HEAD..${UPSTREAM}" | head -20
+# -n 20 instead of `| head -20`: under `set -o pipefail`, head closing the
+# pipe early makes git log die of SIGPIPE (141) and set -e kills the script.
+git log --oneline -n 20 "HEAD..${UPSTREAM}"
 if [ "${NEW_COUNT}" -gt 20 ]; then
   echo "    ... (${NEW_COUNT} total)"
 fi
