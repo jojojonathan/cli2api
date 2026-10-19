@@ -90,6 +90,14 @@ if ! go test ./internal/api/ -run 'TestRequestSessionKey' -count=1; then
   echo "   resolve manually with: git merge ${UPSTREAM}" >&2
   exit 1
 fi
+
+echo "==> Verifying workbuddy provider tests still pass"
+if ! go test ./internal/providers/workbuddy/ -count=1; then
+  git reset --hard ORIG_HEAD >/dev/null
+  echo "!! workbuddy tests failed on the merged tree, rolled back." >&2
+  echo "   resolve manually with: git merge ${UPSTREAM}" >&2
+  exit 1
+fi
 echo "==> merge ok: $(git log --oneline -1)"
 
 if [ "${PUSH}" = "1" ]; then
