@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/caigee-cmd/cli2api/internal/accounts"
 	"github.com/caigee-cmd/cli2api/internal/providers"
 	"github.com/caigee-cmd/cli2api/internal/providers/qoder/qauth"
 )
@@ -158,6 +159,13 @@ func (c *Client) Bridge(ctx context.Context, accountID string) (*Bridge, error) 
 	}
 	format, payload, err := store.LoadCredentialPayload(ctx, accountID)
 	if err != nil {
+		// Legacy accounts predate the credential-payload row entirely, so the
+		// store reports them as ErrAccountNotFound. That IS the no-PAT case:
+		// map it to the sentinel so Models/Quota/Checkin/Probe fall back to
+		// the worker path instead of failing the whole call.
+		if errors.Is(err, accounts.ErrAccountNotFound) {
+			return nil, ErrPATRequired
+		}
 		return nil, err
 	}
 	pat, err := LoadPAT(format, payload)

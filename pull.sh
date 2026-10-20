@@ -134,6 +134,14 @@ if ! go test ./internal/providers/trae/ -count=1; then
   echo "   resolve manually with: git merge ${TARGET}" >&2
   exit 1
 fi
+
+echo "==> Verifying qoder provider tests still pass"
+if ! go test ./internal/providers/qoder/ -count=1; then
+  git reset --hard ORIG_HEAD >/dev/null
+  echo "!! qoder tests failed on the merged tree, rolled back." >&2
+  echo "   resolve manually with: git merge ${TARGET}" >&2
+  exit 1
+fi
 echo "==> merge ok: $(git log --oneline -1)"
 
 if [ "${PUSH}" = "1" ]; then

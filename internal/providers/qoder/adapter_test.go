@@ -15,13 +15,17 @@ import (
 	"github.com/caigee-cmd/cli2api/internal/translate"
 )
 
-func TestAdapterDoesNotRegisterProber(t *testing.T) {
+func TestAdapterRegistersProber(t *testing.T) {
 	adapter := NewClient().Adapter()
 	if adapter.ID != "qoder" {
 		t.Fatalf("id = %q", adapter.ID)
 	}
-	if adapter.Prober != nil {
-		t.Fatal("S09 Adapter must omit Prober so empty-URL Qoder stays off refreshInProcess")
+	// Since the PAT bridge the prober is registered: in-process PAT items
+	// need refreshInProcess to probe via the Bridge and persist account
+	// status; legacy worker items keep the worker /health probe inside
+	// Probe itself.
+	if adapter.Prober == nil {
+		t.Fatal("Adapter must register Prober for the in-process PAT path")
 	}
 	if adapter.Models == nil || adapter.Login == nil || adapter.Chat == nil {
 		t.Fatal("expected Models, Login, and Chat wrappers")
