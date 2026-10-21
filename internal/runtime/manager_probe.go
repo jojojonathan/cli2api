@@ -50,13 +50,6 @@ func (m *Manager) refreshOne(ctx context.Context, item Item, forceQuota bool) er
 		return nil
 	}
 	if item.Runtime == string(providers.RuntimeInProcess) || strings.TrimSpace(item.URL) == "" {
-		// A child-runtime Qoder item without a URL (daemon mid-boot or in
-		// restart backoff) belongs to the manager's own spawn/restart state
-		// machine; probing it here would fight that. Only in-process PAT
-		// items take the adapter probe.
-		if item.Provider == "qoder" && item.Runtime != string(providers.RuntimeInProcess) {
-			return nil
-		}
 		return m.refreshInProcess(ctx, item)
 	}
 	client := qoder.WorkerClient{HTTP: m.httpClient}

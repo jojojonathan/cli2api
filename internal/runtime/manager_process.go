@@ -81,12 +81,6 @@ func (m *Manager) startAccount(ctx context.Context, account Account) error {
 		if m.runCtx.Err() != nil {
 			return errManagerClosed
 		}
-		// The add-account flow starts a worker before the PAT is stored; the
-		// bridge replaces that daemon entirely, so stop the orphan here.
-		// stopAccount is a no-op when no process is running (fresh boot).
-		if err := m.stopAccount(account.ID); err != nil {
-			return err
-		}
 		ready := true
 		m.pool.Upsert(Item{
 			ID: account.ID, Provider: descriptor.ID, Region: account.ProviderRegion,

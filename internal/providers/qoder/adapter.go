@@ -153,17 +153,15 @@ func (c *Client) SetLoginWait(timeout, interval time.Duration) {
 }
 
 func (c *Client) Adapter() providers.Adapter {
-	// Prober is registered since the PAT bridge: in-process PAT items need
-	// refreshInProcess to probe via the Bridge (and persist account status),
-	// while legacy worker items never take that path (they carry a worker
-	// URL) and keep the worker /health probe inside Probe itself.
+	// Probe/Quota stay off the registered bundle in S09: empty-URL Qoder
+	// items must not enter refreshInProcess just because an Adapter exists.
+	// Callers that need those methods use the Client directly.
 	return providers.Adapter{
 		ID:         "qoder",
 		Credential: patCodec{},
 		Login:      c,
 		Chat:       c,
 		Models:     c,
-		Prober:     c,
 		Checkin:    c,
 	}
 }
@@ -474,21 +472,6 @@ func FreeCatalogIDsFromInfos(models []providers.ModelInfo) []string {
 }
 
 func (c *Client) Probe(ctx context.Context, accountID string) (providers.AccountHealth, error) {
-	// In-process path: PAT-backed accounts probe the Bridge session directly,
-	// so the console's readiness loop marks them ready (and persists status).
-	// Legacy accounts (no PAT row) fall through to the worker /health probe.
-	if b, err := c.bridge(ctx, accountID); err == nil {
-		if err := b.EnsureFreshSession(ctx); err != nil {
-			return providers.AccountHealth{}, err
-		}
-		health := providers.AccountHealth{Ready: true}
-		if ident := b.currentIdentity(); ident != nil {
-			health.UID = ident.UID
-		}
-		return health, nil
-	} else if !errors.Is(err, ErrPATRequired) {
-		return providers.AccountHealth{}, err
-	}
 	workerURL, err := c.lookup(accountID)
 	if err != nil {
 		return providers.AccountHealth{}, err
