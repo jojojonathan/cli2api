@@ -69,6 +69,8 @@ type Bridge struct {
 	catalogRaw   map[string]any   // raw model/list response for ExtractCatalog callers
 	catalogTs    int64            // unix seconds
 	catalogInflt bool
+	// catalogFetch overrides CatalogModels in RoutingCatalog (tests only).
+	catalogFetch func(ctx context.Context) ([]map[string]any, error)
 
 	// account caches the /user/status + quota/usage snapshot. Both are
 	// best-effort enrichment: the cached tier covers a transient status
@@ -332,9 +334,19 @@ func (b *Bridge) applyJobToken(jt map[string]any, userType string) {
 		SecurityOauthToken: securityOauth,
 		RefreshToken:       refreshToken,
 	}
-	sess := qauth.NewSession(identity, b.machineID, b.machineToken, b.machineType)
-
 	b.mu.Lock()
+	// A refresh response that omits a token must not erase the one we hold:
+	// an empty securityOauthToken would make check-in/quota fail with "token
+	// unavailable", and an empty refreshToken would break the next renewal.
+	if securityOauth == "" {
+		securityOauth = b.securityOath
+		identity.SecurityOauthToken = securityOauth
+	}
+	if refreshToken == "" {
+		refreshToken = b.refreshToken
+		identity.RefreshToken = refreshToken
+	}
+	sess := qauth.NewSession(identity, b.machineID, b.machineToken, b.machineType)
 	b.sess = sess
 	b.identity = &identity
 	b.refreshToken = refreshToken
@@ -557,6 +569,31 @@ func (b *Bridge) CatalogRaw(ctx context.Context) (map[string]any, error) {
 	b.catalogMu.Lock()
 	defer b.catalogMu.Unlock()
 	return b.catalogRaw, nil
+}
+
+// RoutingCatalog returns the catalog for per-request model resolution
+// without adding a network call to the hot path: any in-memory snapshot is
+// used as-is, even past its TTL (the background refresh keeps it current).
+// Only a cold or failed cache triggers a synchronous fetch, which
+// CatalogModels single-flights and stores into the same cache.
+func (b *Bridge) RoutingCatalog(ctx context.Context) ([]map[string]any, error) {
+	b.catalogMu.Lock()
+	cached := b.catalog
+	b.catalogMu.Unlock()
+	if cached != nil {
+		return cached, nil
+	}
+	if b.catalogFetch != nil {
+		entries, err := b.catalogFetch(ctx)
+		if err == nil {
+			b.catalogMu.Lock()
+			b.catalog = entries
+			b.catalogTs = time.Now().Unix()
+			b.catalogMu.Unlock()
+		}
+		return entries, err
+	}
+	return b.CatalogModels(ctx)
 }
 
 func (b *Bridge) lookupCatalog() ([]map[string]any, bool) {

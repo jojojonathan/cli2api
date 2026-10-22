@@ -1,3 +1,4 @@
+import { toast } from '@/lib/toast'
 import { copyText } from '@/lib/clipboard'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@heroui/react'
@@ -281,6 +282,7 @@ export function AccountsPage() {
   }
 
   async function onRefreshAccount(id: string) {
+    toast({ id: `refresh-${id}`, type: 'loading', title: t('toastRefreshingAccount') })
     setBusy({ id, kind: 'refresh' })
     setNoteById((current) => {
       const next = { ...current }
@@ -289,6 +291,10 @@ export function AccountsPage() {
     })
     try {
       await refreshAccountsInBatches([id])
+      toast({ id: `refresh-${id}`, type: 'success', title: t('toastAccountRefreshed') })
+    } catch (error) {
+      toast({ id: `refresh-${id}`, type: 'error', title: t('toastFailed'), description: error instanceof Error ? error.message : String(error) })
+      throw error
     } finally {
       setBusy(null)
     }
@@ -296,8 +302,13 @@ export function AccountsPage() {
 
   async function onRefreshCredits() {
     setQuotaRefreshing(true)
+    toast({ id: 'refresh-credits', type: 'loading', title: t('toastRefreshingCredits') })
     try {
       await refreshAccountsInBatches(accounts.map((account) => account.id))
+      toast({ id: 'refresh-credits', type: 'success', title: t('toastCreditsRefreshed') })
+    } catch (error) {
+      toast({ id: 'refresh-credits', type: 'error', title: t('toastFailed'), description: error instanceof Error ? error.message : String(error) })
+      throw error
     } finally {
       setQuotaRefreshing(false)
     }
@@ -354,8 +365,8 @@ export function AccountsPage() {
   return (
     <div className="space-y-4">
       {checkinError ? <PageAlert title={checkinError} /> : null}
-      <section data-gsap-reveal className="grid gap-3 border-b border-separator pb-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+      <section data-gsap-reveal className="grid gap-3 pb-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-body">
           <div className="flex items-center gap-3">
             <span className="mono font-semibold">{rows.length}</span>
             <span className="text-muted">{t('accountCount')}</span>
@@ -381,7 +392,7 @@ export function AccountsPage() {
         </div>
       </section>
 
-      <AddAccountModal isOpen={addOpen} onClose={() => setAddOpen(false)} onAdded={() => void reloadAccounts(false)} />
+      <AddAccountModal isOpen={addOpen} onClose={() => setAddOpen(false)} onAdded={() => { toast({ type: 'success', title: t('toastAccountAdded') }); void reloadAccounts(false) }} />
       <AccountModelsModal key={modelsId ?? 'closed'} account={modelsAccount} t={t} onClose={() => setModelsId(null)} />
       <AccountCheckinRecordsModal key={checkinHistoryId ?? 'closed'} account={checkinHistoryAccount} t={t} onClose={() => setCheckinHistoryId(null)} />
       <EditAccountModal
@@ -411,6 +422,8 @@ export function AccountsPage() {
           void run(id, 'delete', async () => {
             await deleteAccount(id)
             await reloadAccounts(false)
+          }).then((ok) => {
+            if (ok) toast({ type: 'success', title: t('toastAccountDeleted') })
           })
         }}
       />
@@ -462,7 +475,7 @@ export function AccountsPage() {
 
       {!hasAccounts ? (
         <EmptyPanel
-          className="rounded-3xl border border-dashed border-border"
+          className="rounded-3xl bg-surface-secondary"
           icon={<BrandMark size={28} />}
           title={t('noAccounts')}
           hint={t('accountEmptyHint')}
@@ -472,7 +485,7 @@ export function AccountsPage() {
 
       {hasAccounts && !filteredRows.length ? (
         <EmptyPanel
-          className="rounded-3xl border border-dashed border-border"
+          className="rounded-3xl bg-surface-secondary"
           icon={<MagnifyingGlass size={22} />}
           title={t('noAccountsMatch')}
           action={<Button size="sm" variant="ghost" onPress={() => { setQuery(''); setFilter('all') }}>{t('clearFilters')}</Button>}
