@@ -3,6 +3,76 @@
 Published user-facing notes for GitHub Releases and the console update page.
 Write upcoming notes as bilingual files in `changelog/unreleased/`.
 
+## 0.7.2 - 2026-10-22
+
+### English
+
+- **New** · Overview stats: request outcome mix (ok / incomplete / error / canceled), cache hit rate, streaming share and canceled requests; the account pool lists cooling accounts with reason, countdown and backoff level, plus the session-affinity hit rate.
+- **New** · Overview drill-down: click a model, account, provider or error kind, or drag a range on the traffic chart, to open the matching logs. Time windows add 30d and custom; stats auto-refresh every 30s and can be paused.
+- **New** · Usage page with sortable tables by model, account and provider (requests, success rate, p95, tokens, cache, credits). The traffic chart switches between requests, tokens and latency.
+- **New** · Live concurrency: an overview strip (in-flight vs. capacity, last 60s), per-account in-flight bars and a sidebar indicator.
+- **Console** · Roomier sidebar; denser overview without decorative icons; the Accounts page header is one toolbar (status, provider, search, actions).
+- **Console** · Calmer styling: one small-text size, smaller radii and shadows, neutral status boxes; pages show content without skeleton fades or entrance animations.
+- **Console** · Edit-account modal is wider; the model picker adds search, select all / clear, and flags saved models that left the catalog.
+- **API** · New `GET /api/live` for live concurrency. `/api/logs/stats` accepts `dim=model,account,provider` and `limit`, with p95, token, cache and credit totals; `/api/logs/requests` accepts `provider`. Existing calls behave as before.
+
+### 中文
+
+- **新功能** · 概览统计：请求结果构成（成功 / 未完成 / 失败 / 取消）、缓存命中率、流式占比与取消数；账号池列出冷却账号的原因、倒计时与退避等级，并显示会话亲和命中率。
+- **新功能** · 概览下钻：点击模型、账号、供应商或错误类型，或在流量图上拖选时间段，直接打开对应日志。时间窗口新增 30 天与自定义；统计每 30 秒自动刷新，可暂停。
+- **新功能** · 新增「用量」页，按模型、账号、供应商展示可排序表格（请求数、成功率、p95、Tokens、缓存、积分）；流量图可切换请求 / Tokens / 延迟。
+- **新功能** · 实时并发：概览顶部并发条（当前并发 / 总容量、近 60 秒）、每个账号的并发细条，以及侧边栏并发指示。
+- **界面** · 侧边栏更宽松；概览更紧凑，去掉装饰图标；账号页顶部合并为一行工具栏（状态、供应商、搜索、操作）。
+- **界面** · 样式更克制：小字统一字号，圆角与阴影收小，状态提示改用中性底色；页面加载后直接显示内容，不再有骨架屏淡入和入场动画。
+- **界面** · 编辑账号弹窗加宽；模型选择支持搜索、全选 / 清空，并标出已下线的模型。
+- **API** · 新增 `GET /api/live` 实时并发接口；`/api/logs/stats` 支持 `dim=model,account,provider` 与 `limit`，返回 p95、Token、缓存与积分合计；`/api/logs/requests` 支持 `provider` 筛选。原有调用行为不变。
+
+## 0.7.1 - 2026-10-22
+
+### English
+
+- **New** · Qoder: optional per-account traffic guard, off by default (`QODER_TRAFFIC_GUARD=on`; `QODER_TRAFFIC_GUARD_CONCURRENCY`, `QODER_TRAFFIC_GUARD_INTERVAL_MS`).
+- **New** · WorkBuddy: `X-Private-Data` is configurable via `WORKBUDDY_PRIVATE_DATA=auto|true|false` (default `auto`).
+- **New** · Qoder requests resolve the model name / display name to the account's catalog key; unknown models return `model_not_found`.
+- **Fix** · `/v1/messages` accepts in-band `role: "system"` messages; Claude Code 2.1.293+ no longer gets 400. (#328)
+- **Fix** · Codex Responses-Lite models (e.g. GPT-5.6) send `reasoning.context: "all_turns"`, fixing upstream 400. (#341)
+- **Fix** · WorkBuddy keeps `max` reasoning effort when the catalog advertises it, instead of downgrading to `xhigh`. (#343)
+- **Fix** · Qoder streams: unique completion `id` per request, finish on `[DONE]`, release the upstream on early close, and fail over heartbeat-only upstreams (`upstream_empty`). (#339, #342, #345)
+- **Fix** · Qoder tool calls: non-streaming keeps the full call; an empty `tool_calls` array is ignored. (#338)
+- **Fix** · Qoder keeps earlier assistant `reasoning_content`; model key mappings refresh with each catalog refresh. (#340, #346)
+- **Fix** · Legacy Qoder accounts (pre-v0.7.0 CLI login, no PAT) fall back to the worker again; no more "account not found". (#337)
+- **Fix** · Qoder check-in shows why nothing was claimable; token renewal no longer clears held tokens. (#327)
+- **Fix** · A Qoder worker that crashes right after an automatic restart is now restarted again instead of staying dead.
+- **Console** · Cleaner look: fewer nested borders, one type scale with the system UI font, larger sidebar text; API key prefix on its own line. (#347, #350)
+- **Console** · Settings split into tabs (General, Routing, Security & data, Updates); the sidebar version entry opens release notes and update actions. (#347)
+- **Upstream** · Qoder: one client version (1.1.32) across headers, signature and User-Agent (`QoderWork/…` CN, `Qoder/…` intl); streams add `cosy-machineos` / `cosy-machinehostname`. (#349)
+- **Upstream** · WorkBuddy client versions: CLI 2.161.0, desktop 5.8.4 / 5.8.3 (CN), IDE 2.168.2, three-part desktop User-Agent. (#349)
+- **Upstream** · WorkBuddy: chat 401 refreshes the token once and retries; TLS verification errors are no longer retried or failed over. (#348)
+- **Upstream** · Qoder: 10605 queue errors return 429 + `Retry-After` without cooling the account; HTTP 430 shows "client version too low". (#348)
+- **Upstream** · Devin: daily vs. weekly quota told apart; cooldown follows the window reset and lifts early once usage recovers. (#348)
+
+### 中文
+
+- **新功能** · Qoder：新增可选的单账号流量守卫，默认关闭（`QODER_TRAFFIC_GUARD=on`；可调 `QODER_TRAFFIC_GUARD_CONCURRENCY`、`QODER_TRAFFIC_GUARD_INTERVAL_MS`）。
+- **新功能** · WorkBuddy：`X-Private-Data` 可通过 `WORKBUDDY_PRIVATE_DATA=auto|true|false` 配置（默认 `auto`）。
+- **新功能** · Qoder 按模型目录把模型名/显示名解析为账号网关 key，未知模型返回 `model_not_found`。
+- **修复** · `/v1/messages` 支持 `messages` 内的 `role: "system"`，Claude Code 2.1.293+ 不再报 400。（#328）
+- **修复** · Codex Responses-Lite 模型（如 GPT-5.6）发送 `reasoning.context: "all_turns"`，修复上游 400。（#341）
+- **修复** · WorkBuddy 在目录支持 `max` 时不再把推理档位降级为 `xhigh`。（#343）
+- **修复** · Qoder 流式：每请求唯一 completion `id`、收到 `[DONE]` 即结束、提前关闭时释放上游、仅心跳的上游以 `upstream_empty` 切换。（#339、#342、#345）
+- **修复** · Qoder 工具调用：非流式保留完整调用；空 `tool_calls` 数组不再视为工具调用。（#338）
+- **修复** · Qoder 保留历史 assistant 的 `reasoning_content`；模型 key 映射随目录刷新替换。（#340、#346）
+- **修复** · v0.7.0 前 CLI 登录、无 PAT 的老 Qoder 账号重新回退 worker，不再报 "account not found"。（#337）
+- **修复** · Qoder 签到无可领活动时显示原因；token 续期缺字段时保留原值。（#327）
+- **修复** · Qoder worker 在自动重启后立即再次崩溃时会继续重启，不再一直处于 dead 状态。
+- **界面** · 控制台更简洁：去掉嵌套线框、统一字号与系统字体、侧边栏加大；API 密钥前缀单独一行。（#347、#350）
+- **界面** · 系统设置分为常规 / 路由调度 / 安全与数据 / 版本更新标签页；侧边栏版本入口可查看更新日志并下载/更新。（#347）
+- **上游对齐** · Qoder：请求头、签名、User-Agent 统一客户端版本 1.1.32（国内 `QoderWork/…`、国际 `Qoder/…`）；流式补 `cosy-machineos` / `cosy-machinehostname`。（#349）
+- **上游对齐** · WorkBuddy 客户端版本：CLI 2.161.0、桌面 5.8.4 / 5.8.3（国内）、IDE 2.168.2，桌面 UA 改为三段式。（#349）
+- **上游对齐** · WorkBuddy：对话 401 先刷新 token 再重试同账号；TLS 证书错误不再重试或换号。（#348）
+- **上游对齐** · Qoder：10605 排队返回 429 + `Retry-After`，不冷却账号；HTTP 430 提示“客户端版本过低”。（#348）
+- **上游对齐** · Devin：区分日/周额度，按窗口重置时间冷却，额度恢复后提前解除。（#348）
+
 ## 0.7.0 - 2026-10-19
 
 ### English

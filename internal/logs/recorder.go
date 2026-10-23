@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ type RequestQuery interface {
 	ListRequestLogs(ctx context.Context, filter accounts.RequestLogFilter) (accounts.RequestLogList, error)
 	GetRequestLog(ctx context.Context, id string) (accounts.RequestLog, error)
 	SummarizeRequestLogs(ctx context.Context, from, to time.Time) (accounts.RequestStats, error)
+	SummarizeRequestLogsWith(ctx context.Context, opts accounts.RequestStatsOptions) (accounts.RequestStats, error)
 }
 
 // RequestStore is the union the SQLite store already implements. It keeps
@@ -52,6 +54,10 @@ type StatsQuery struct {
 	Hours int
 	From  *time.Time
 	To    *time.Time
+	// Dims limits which grouped lists are computed (model/account/provider);
+	// empty means all. Limit caps each list (0 = overview default).
+	Dims  []string
+	Limit int
 }
 
 type RequestRecorder struct {
@@ -62,6 +68,8 @@ type RequestRecorder struct {
 	done         chan struct{}
 	statsCacheMu sync.Mutex
 	statsCache   map[string]statsCacheEntry
+	rateOnce     sync.Once
+	rate         *RateCounter
 }
 
 func NewRequestRecorder(store RequestPersister) *RequestRecorder {
@@ -111,12 +119,24 @@ func (r *RequestRecorder) Close() {
 }
 
 func (r *RequestRecorder) Start(log accounts.RequestLog) {
+	r.rateCounter().Add()
 	r.enqueue(func() {
 		if err := r.store.InsertRequestLog(context.Background(), log); err != nil {
 			logf("insert request log: %v", err)
 		}
 	})
 }
+
+func (r *RequestRecorder) rateCounter() *RateCounter {
+	if r == nil {
+		return nil
+	}
+	r.rateOnce.Do(func() { r.rate = NewRateCounter() })
+	return r.rate
+}
+
+// RecentRequests is the number of requests started in the last 60 seconds.
+func (r *RequestRecorder) RecentRequests() int { return r.rateCounter().Count() }
 
 func (r *RequestRecorder) Finish(log accounts.RequestLog) {
 	r.enqueue(func() {
@@ -210,14 +230,15 @@ func (r *RequestRecorder) Stats(ctx context.Context, query StatsQuery) (accounts
 		value := to.Add(-time.Duration(hours) * time.Hour)
 		from = &value
 	}
-	cacheKey := fmt.Sprintf("%d:%d", from.Unix(), to.Unix())
+	opts := accounts.RequestStatsOptions{From: *from, To: *to, Dims: query.Dims, Limit: query.Limit}
+	cacheKey := fmt.Sprintf("%d:%d:%s:%d", from.Unix(), to.Unix(), strings.Join(query.Dims, ","), opts.EffectiveLimit())
 	r.statsCacheMu.Lock()
 	if cached, ok := r.statsCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
 		r.statsCacheMu.Unlock()
 		return cached.stats, nil
 	}
 	r.statsCacheMu.Unlock()
-	stats, err := store.SummarizeRequestLogs(ctx, *from, *to)
+	stats, err := store.SummarizeRequestLogsWith(ctx, opts)
 	if err != nil {
 		return accounts.RequestStats{}, err
 	}
