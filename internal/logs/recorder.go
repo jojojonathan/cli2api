@@ -4,12 +4,46 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/caigee-cmd/cli2api/internal/accounts"
 )
+
+// Request-log retention. Defaults preserve the historical behaviour (7 days /
+// 20k rows); deployments that want a longer usage history can raise the
+// retention window and the row cap together.
+const (
+	defaultRetentionDays = 7
+	defaultMaxLogRows    = 20_000
+	retentionDaysEnv     = "CLI2API_LOG_RETENTION_DAYS"
+	maxLogRowsEnv        = "CLI2API_LOG_MAX_ROWS"
+)
+
+// RetentionDays is how long request logs are kept; 0 or an invalid value falls
+// back to the default.
+func RetentionDays() int {
+	if v := strings.TrimSpace(os.Getenv(retentionDaysEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultRetentionDays
+}
+
+// MaxLogRows caps the retained rows independently of the age window, so a burst
+// of traffic cannot grow the SQLite file without bound.
+func MaxLogRows() int {
+	if v := strings.TrimSpace(os.Getenv(maxLogRowsEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxLogRows
+}
 
 // RequestPersister is the write surface the recorder actually uses.
 // Query methods stay off this interface so a later store package can
@@ -32,6 +66,8 @@ type RequestQuery interface {
 	GetRequestLog(ctx context.Context, id string) (accounts.RequestLog, error)
 	SummarizeRequestLogs(ctx context.Context, from, to time.Time) (accounts.RequestStats, error)
 	SummarizeRequestLogsWith(ctx context.Context, opts accounts.RequestStatsOptions) (accounts.RequestStats, error)
+	SummarizeRequestUsage(ctx context.Context, from, to time.Time) (accounts.RequestUsage, error)
+	SummarizeModelCosts(ctx context.Context, from, to time.Time) ([]accounts.CostUsageRow, error)
 }
 
 // RequestStore is the union the SQLite store already implements. It keeps
@@ -43,6 +79,11 @@ type RequestStore interface {
 
 type statsCacheEntry struct {
 	stats     accounts.RequestStats
+	expiresAt time.Time
+}
+
+type usageCacheEntry struct {
+	usage     accounts.RequestUsage
 	expiresAt time.Time
 }
 
@@ -68,6 +109,8 @@ type RequestRecorder struct {
 	done         chan struct{}
 	statsCacheMu sync.Mutex
 	statsCache   map[string]statsCacheEntry
+	usageCacheMu sync.Mutex
+	usageCache   map[string]usageCacheEntry
 	rateOnce     sync.Once
 	rate         *RateCounter
 }
@@ -192,7 +235,8 @@ func (r *RequestRecorder) PurgeLoop(stop <-chan struct{}, every time.Duration) {
 
 func (r *RequestRecorder) purgeOnce() {
 	r.enqueue(func() {
-		if _, err := r.store.PurgeRequestLogs(context.Background(), 7*24*time.Hour, 20_000); err != nil {
+		keep := time.Duration(RetentionDays()) * 24 * time.Hour
+		if _, err := r.store.PurgeRequestLogs(context.Background(), keep, MaxLogRows()); err != nil {
 			logf("purge request logs: %v", err)
 		}
 	})
@@ -265,6 +309,55 @@ func (r *RequestRecorder) Stats(ctx context.Context, query StatsQuery) (accounts
 	return stats, nil
 }
 
+func (r *RequestRecorder) Usage(ctx context.Context, query StatsQuery) (accounts.RequestUsage, error) {
+	store := r.Store()
+	if store == nil {
+		return accounts.RequestUsage{}, fmt.Errorf("request logs unavailable")
+	}
+	now := time.Now().UTC().Truncate(10 * time.Second)
+	hours := NormalizeStatsHours(query.Hours)
+	to := query.To
+	if to == nil {
+		value := now
+		to = &value
+	}
+	from := query.From
+	if from == nil {
+		value := to.Add(-time.Duration(hours) * time.Hour)
+		from = &value
+	}
+	cacheKey := fmt.Sprintf("%d:%d", from.Unix(), to.Unix())
+	r.usageCacheMu.Lock()
+	if cached, ok := r.usageCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
+		r.usageCacheMu.Unlock()
+		return cached.usage, nil
+	}
+	r.usageCacheMu.Unlock()
+	usage, err := store.SummarizeRequestUsage(ctx, *from, *to)
+	if err != nil {
+		return accounts.RequestUsage{}, err
+	}
+	r.usageCacheMu.Lock()
+	if r.usageCache == nil {
+		r.usageCache = make(map[string]usageCacheEntry)
+	}
+	now = time.Now()
+	for k, v := range r.usageCache {
+		if !now.Before(v.expiresAt) {
+			delete(r.usageCache, k)
+		}
+	}
+	for len(r.usageCache) >= statsCacheMaxEntries {
+		for k := range r.usageCache {
+			delete(r.usageCache, k)
+			break
+		}
+	}
+	r.usageCache[cacheKey] = usageCacheEntry{usage: usage, expiresAt: now.Add(10 * time.Second)}
+	r.usageCacheMu.Unlock()
+	return usage, nil
+}
+
 func (r *RequestRecorder) StatsCacheSize() int {
 	if r == nil {
 		return 0
@@ -272,6 +365,23 @@ func (r *RequestRecorder) StatsCacheSize() int {
 	r.statsCacheMu.Lock()
 	defer r.statsCacheMu.Unlock()
 	return len(r.statsCache)
+}
+
+
+// CostBreakdown prices usage in the window against official list prices where
+// available, and always reports consumed quota. Live (uncached): the panel is
+// opened on demand and the hourly aggregate is cheap.
+func (r *RequestRecorder) CostBreakdown(ctx context.Context, from, to time.Time) (accounts.CostBreakdown, error) {
+	store := r.Store()
+	if store == nil {
+		return accounts.CostBreakdown{}, fmt.Errorf("request logs unavailable")
+	}
+	rows, err := store.SummarizeModelCosts(ctx, from, to)
+	if err != nil {
+		return accounts.CostBreakdown{}, err
+	}
+	span := to.Sub(from)
+	return accounts.BuildCostBreakdown(rows, from, to, span > 48*time.Hour), nil
 }
 
 func logf(format string, args ...any) {

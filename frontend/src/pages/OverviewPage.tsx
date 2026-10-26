@@ -10,11 +10,13 @@ import {
   TrendDown,
   TrendUp,
 } from '@phosphor-icons/react'
-import { fetchRequestStats, type RequestStats } from '@/api/logs'
+import { fetchRequestStats, fetchRequestUsage, type RequestStats, type RequestUsage } from '@/api/logs'
 import { fetchSystemResources, type SystemResources } from '@/api/system'
-import type { Overview } from '@/api/types'
+import type { ModelInfo, Overview } from '@/api/types'
 import { CountUp } from '@/components/overview/CountUp'
 import { TrafficChartEmpty } from '@/components/overview/TrafficChartEmpty'
+import { ExpiryDistribution } from '@/components/overview/ExpiryDistribution'
+import { CreditHistory, UsageDetail } from '@/components/overview/UsagePanels'
 
 const TrafficChart = lazy(() => import('@/components/overview/TrafficChart').then((mod) => ({ default: mod.TrafficChart })))
 import { StatsWindowControls } from '@/components/overview/StatsWindowControls'
@@ -126,16 +128,20 @@ function quotaTone(percentage?: number, exceeded?: boolean) {
 export function OverviewPage() {
   const { lang, t } = useI18n()
   const { overview, loading, error } = useOverview()
-  const [statsWindow, setStatsWindow] = useState<StatsWindow>('24')
+  const [statsWindow, setStatsWindow] = useState<StatsWindow>('today')
   const [customRange, setCustomRange] = useState<DateRangeValue | null>(null)
   const [paused, setPaused] = useState(false)
   const navigate = useNavigate()
   const [stats, setStats] = useState<RequestStats | null>(null)
   const [statsError, setStatsError] = useState('')
   const [statsLoading, setStatsLoading] = useState(true)
+  const [usage, setUsage] = useState<RequestUsage | null>(null)
+  const [usageError, setUsageError] = useState('')
+  const [usageLoading, setUsageLoading] = useState(true)
   const [accounts, setAccounts] = useState<NonNullable<Overview['accounts']>>([])
   const [accountsLoading, setAccountsLoading] = useState(true)
   const [modelCount, setModelCount] = useState(0)
+  const [models, setModels] = useState<ModelInfo[]>([])
   const [resources, setResources] = useState<SystemResources | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const { live, samples: liveSamples } = useLive()
@@ -165,11 +171,13 @@ export function OverviewPage() {
 
   useEffect(() => {
     let cancelled = false
-    void Promise.allSettled([fetchAccounts(false), fetchModels()]).then(([accountsResult, modelsResult]) => {
-      if (cancelled) return
-      if (accountsResult.status === 'fulfilled') setAccounts(accountsResult.value.data || [])
-      if (modelsResult.status === 'fulfilled') setModelCount((modelsResult.value.data || []).length)
-    })
+    void Promise.allSettled([fetchAccounts(false), fetchModels(), fetchModels(undefined, false, 'regional')])
+      .then(([accountsResult, modelsResult, regionalResult]) => {
+        if (cancelled) return
+        if (accountsResult.status === 'fulfilled') setAccounts(accountsResult.value.data || [])
+        if (modelsResult.status === 'fulfilled') setModelCount((modelsResult.value.data || []).length)
+        if (regionalResult.status === 'fulfilled') setModels(regionalResult.value.data || [])
+      })
       .finally(() => { if (!cancelled) setAccountsLoading(false) })
     return () => { cancelled = true }
   }, [])
@@ -207,8 +215,38 @@ export function OverviewPage() {
     return () => { statsRequestRef.current++ }
   }, [loadStats])
 
+  // Usage detail follows the same window as the traffic chart: reuse statsQuery
+  // so "today"/"custom" (explicit from/to) and hour windows stay in lockstep.
+  const usageRequestRef = useRef(0)
+  const loadUsage = useCallback((quiet: boolean) => {
+    const query = statsQuery(statsWindow, customRange) ?? {}
+    const version = ++usageRequestRef.current
+    void fetchRequestUsage(query)
+      .then((data) => {
+        if (version !== usageRequestRef.current) return
+        setUsage(data)
+        setUsageError('')
+      })
+      .catch((err) => {
+        if (version !== usageRequestRef.current || quiet) return
+        setUsage(null)
+        setUsageError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (version === usageRequestRef.current) setUsageLoading(false)
+      })
+    // customRange is tracked through its string form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statsWindow, customFrom, customTo])
+
+  useEffect(() => {
+    loadUsage(false)
+    return () => { usageRequestRef.current++ }
+  }, [loadUsage])
+
   // Background refresh every 30s; skipped while paused or the tab is hidden,
-  // and caught up as soon as the tab becomes visible again.
+  // and caught up as soon as the tab becomes visible again. Quiet so a failed
+  // refresh keeps the last good traffic + usage panels instead of blanking them.
   useEffect(() => {
     if (paused) return
     let last = Date.now()
@@ -216,6 +254,7 @@ export function OverviewPage() {
       if (document.hidden) return
       last = Date.now()
       loadStats(true)
+      loadUsage(true)
     }
     const timer = setInterval(tick, STATS_REFRESH_MS)
     const onVisible = () => {
@@ -226,7 +265,7 @@ export function OverviewPage() {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [paused, loadStats])
+  }, [paused, loadStats, loadUsage])
 
   // Resource usage polls on its own 5s cadence; independent of the stats window.
   useEffect(() => {
@@ -279,7 +318,7 @@ export function OverviewPage() {
   if (loading && !overview) return <OverviewPageSkeleton />
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5 sm:space-y-4">
       <section className="grid gap-3 pb-1 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
         <div>
           <h2 data-gsap-reveal className="text-title font-semibold">{t('homeDisplay')}</h2>
@@ -291,7 +330,7 @@ export function OverviewPage() {
             onChange={setStatsWindow}
             custom={customRange}
             onCustomChange={setCustomRange}
-            onBusy={() => setStatsLoading(true)}
+            onBusy={() => { setStatsLoading(true); setUsageLoading(true) }}
             t={t}
           />
           <Tooltip delay={300}>
@@ -342,12 +381,12 @@ export function OverviewPage() {
       <section className="grid gap-3 sm:grid-cols-3">
         {secondaryMetrics.map((metric) => (
           <Card key={metric.label} className="gap-0 p-3.5">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
               <div className="min-w-0 flex-1">
                 <div className="text-body text-muted">{metric.label}</div>
                 <div className="mono mt-0.5 truncate text-caption text-muted">{statsLoading ? <SkeletonBlock className="h-3 w-28" /> : metric.detail}</div>
               </div>
-              <div className="tabular shrink-0 text-section font-semibold">
+              <div className="tabular text-section font-semibold sm:shrink-0">
                 {statsLoading ? <SkeletonBlock className="h-5 w-12" /> : metric.value == null ? '—' : <CountUp value={metric.value} kind={metric.kind} />}
               </div>
             </div>
@@ -397,7 +436,7 @@ export function OverviewPage() {
             ) : (
               <TrafficChartEmpty emptyLabel={t('statsEmptyTraffic')} />
             )}
-            <div className="grid grid-cols-2 gap-3 pt-3 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-4 pt-3 sm:grid-cols-4 sm:gap-3">
               {[
                 [t('statsLatencyP50'), formatLatency(traffic.latency.p50_ms)],
                 [t('statsLatencyP95'), formatLatency(traffic.latency.p95_ms)],
@@ -414,6 +453,13 @@ export function OverviewPage() {
         </Card>
       </section>
 
+      <ExpiryDistribution accounts={accounts} t={t} />
+
+      <UsageDetail usage={usage} accounts={accounts} loading={usageLoading} t={t} />
+      {usageError ? <PageAlert title={t('failedStats', { msg: usageError })} /> : null}
+
+      <CreditHistory usage={usage} accounts={accounts} models={models} loading={usageLoading} t={t} />
+
       <section className="grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)]">
         <Card data-gsap-reveal className="overflow-hidden p-0">
           <div className="flex items-center justify-between gap-3 border-b border-separator px-4 py-3">
@@ -426,16 +472,16 @@ export function OverviewPage() {
               <ArrowUpRight size={12} />
             </Link>
           </div>
-          <div className="grid grid-cols-2 border-b border-separator sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-y-1 border-b border-separator sm:grid-cols-4 sm:gap-y-0">
             {[
               [t('ready'), readyAccounts, 'ok'],
               [t('hot'), hotAccounts, hotAccounts ? 'ok' : ''],
               [t('inFlight'), inFlight, inFlight ? 'ok' : ''],
               [t('statsAffinityHit'), affinityHitRate == null ? '—' : formatPercent(affinityHitRate), '', affinity ? t('statsAffinityHint', { hits: affinity.hits ?? 0, misses: affinity.misses ?? 0, bindings: affinity.bindings ?? 0 }) : ''],
             ].map(([label, value, state, hint]) => (
-              <div key={String(label)} className="px-4 py-2.5" title={hint ? String(hint) : undefined}>
+              <div key={String(label)} className="px-4 py-3 sm:py-2.5" title={hint ? String(hint) : undefined}>
                 <div className="text-caption text-muted">{label}</div>
-                <div className="mt-1 flex items-center gap-2">
+                <div className="mt-1.5 flex items-center gap-2 sm:mt-1">
                   <span className="mono text-section font-semibold">{value}</span>
                   {state ? <span className="status-dot" data-state={state} /> : null}
                 </div>
@@ -447,14 +493,18 @@ export function OverviewPage() {
               <div className="text-caption font-medium text-muted">{t('statsCoolingDetails')}</div>
               <div className="mt-2 space-y-1.5">
                 {coolingRows.map(({ account, until }) => (
-                  <div key={account.id} className="flex items-center gap-2 text-caption">
-                    <span className="status-dot shrink-0" data-state="warn" />
-                    <span className="min-w-0 flex-1 truncate font-medium">{account.name || account.id}</span>
-                    <span className="mono shrink-0 text-muted">{account.last_error_kind ? errorLabel(account.last_error_kind, t) : t('statsUnknown')}</span>
-                    <span className="mono w-16 shrink-0 text-right tabular">{formatRemaining(until, now) ?? '—'}</span>
-                    <span className="mono w-12 shrink-0 text-right text-muted" title={t('statsBackoffLevel')}>
-                      {account.restart_backoff_level ? `L${account.restart_backoff_level}` : '—'}
-                    </span>
+                  <div key={account.id} className="flex flex-col gap-1.5 text-caption sm:flex-row sm:items-center sm:gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="status-dot shrink-0" data-state="warn" />
+                      <span className="min-w-0 flex-1 truncate font-medium">{account.name || account.id}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 pl-4 sm:contents sm:pl-0">
+                      <span className="mono shrink-0 text-muted">{account.last_error_kind ? errorLabel(account.last_error_kind, t) : t('statsUnknown')}</span>
+                      <span className="mono shrink-0 tabular sm:w-16 sm:text-right">{formatRemaining(until, now) ?? '—'}</span>
+                      <span className="mono shrink-0 text-muted sm:w-12 sm:text-right" title={t('statsBackoffLevel')}>
+                        {account.restart_backoff_level ? `L${account.restart_backoff_level}` : '—'}
+                      </span>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -473,36 +523,42 @@ export function OverviewPage() {
               const rowMax = liveRow?.max_inflight || account.max_inflight || 4
               const rowSaturated = rowInFlight >= rowMax
               return (
-                <div key={account.id} className="flex items-center gap-3 px-4 py-2.5">
-                  <span className="status-dot shrink-0" data-state={account.ready ? 'ok' : 'danger'} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <ProviderMark provider={account.provider} size={14} />
-                      <div className="truncate text-body font-medium">{account.name || account.id}</div>
-                    </div>
-                    <div className="mono mt-0.5 text-caption text-muted">
-                      {accountProviderLabel(account.provider, account.region, t)}
-                      {' · '}
-                      {account.hot ? t('hot') : account.ready ? t('ready') : t('degraded')}
+                <div key={account.id} className="flex flex-col gap-2.5 px-4 py-3 sm:flex-row sm:items-center sm:gap-3 sm:py-2.5">
+                  <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
+                    <span className="status-dot mt-1.5 shrink-0 sm:mt-0" data-state={account.ready ? 'ok' : 'danger'} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <ProviderMark provider={account.provider} size={14} />
+                        <div className="truncate text-body font-medium">{account.name || account.id}</div>
+                      </div>
+                      <div className="mono mt-0.5 text-caption text-muted">
+                        {accountProviderLabel(account.provider, account.region, t)}
+                        {' · '}
+                        {account.hot ? t('hot') : account.ready ? t('ready') : t('degraded')}
+                      </div>
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1.5" title={rowSaturated ? t('liveSaturated') : t('inFlight')} data-testid="account-inflight">
-                    <span className={`mono text-caption tabular ${rowSaturated ? 'text-warning' : 'text-muted'}`}>{rowInFlight}/{rowMax}</span>
-                    <span className="inline-block h-[2px] w-10 overflow-hidden rounded-[1px] bg-separator">
-                      <span className={`block h-full ${rowSaturated ? 'bg-warning' : 'bg-foreground/50'}`} style={{ width: `${Math.min(100, (rowInFlight / rowMax) * 100)}%` }} />
-                    </span>
-                  </div>
-                  {quota ? (
-                    <div className="flex shrink-0 items-center gap-1.5" title={t('quota')}>
-                      <span className="mono text-caption tabular text-muted">{Math.round(quota.percentage ?? 0)}%</span>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pl-6 sm:shrink-0 sm:pl-0">
+                    <div className="flex items-center gap-1.5" title={rowSaturated ? t('liveSaturated') : t('inFlight')} data-testid="account-inflight">
+                      <span className="text-caption text-muted sm:hidden">{t('inFlight')}</span>
+                      <span className={`mono text-caption tabular ${rowSaturated ? 'text-warning' : 'text-muted'}`}>{rowInFlight}/{rowMax}</span>
                       <span className="inline-block h-[2px] w-10 overflow-hidden rounded-[1px] bg-separator">
-                        <span
-                          className={`block h-full ${tone === 'danger' ? 'bg-danger' : tone === 'warning' ? 'bg-warning' : 'bg-success'}`}
-                          style={{ width: `${Math.min(100, Math.max(0, quota.percentage ?? 0))}%` }}
-                        />
+                        <span className={`block h-full ${rowSaturated ? 'bg-warning' : 'bg-foreground/50'}`} style={{ width: `${Math.min(100, (rowInFlight / rowMax) * 100)}%` }} />
                       </span>
                     </div>
-                  ) : null}
+                    {quota ? (
+                      <div className="flex items-center gap-1.5" title={t('quota')}>
+                        <span className="text-caption text-muted sm:hidden">{t('quota')}</span>
+                        <span className="mono text-caption tabular text-muted">{Math.round(quota.percentage ?? 0)}%</span>
+                        <span className="inline-block h-[2px] w-10 overflow-hidden rounded-[1px] bg-separator">
+                          <span
+                            className={`block h-full ${tone === 'danger' ? 'bg-danger' : tone === 'warning' ? 'bg-warning' : 'bg-success'}`}
+                            style={{ width: `${Math.min(100, Math.max(0, quota.percentage ?? 0))}%` }}
+                          />
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               )
             })}

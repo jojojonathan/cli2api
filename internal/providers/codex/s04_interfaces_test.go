@@ -57,7 +57,7 @@ func credentialPayload() []byte {
 		RefreshToken: "rt",
 		AccountID:    "acct_123",
 		Email:        "u@example.com",
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(10 * 24 * time.Hour).Unix(),
 	}.Encode()
 	return payload
 }
@@ -143,7 +143,7 @@ func TestProbeRecoversMissingAccountIDFromIDToken(t *testing.T) {
 		IDToken:      idToken,
 		AccessToken:  "at",
 		RefreshToken: "rt",
-		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ExpiresAt:    time.Now().Add(10 * 24 * time.Hour).Unix(),
 	})
 	store := testStore{items: map[string][]byte{"acc-1": payload}}
 	health, err := NewClient(store).Probe(context.Background(), "acc-1")
@@ -177,13 +177,16 @@ func TestDecodeCredentialNestedTokenData(t *testing.T) {
 }
 
 func TestDecodeCredentialNestedSIWC(t *testing.T) {
-	payload := []byte(`{"use_siwc":true,"token_data":{"account_id":"acct","email":"e@x"},"siwc":{"access_token":"sat","refresh_token":"srt","client_id":"issued-client","device_id":"dev-1","expired":"2027-01-01T00:00:00Z"}}`)
+	payload := []byte(`{"use_siwc":true,"token_data":{"access_token":"outer-at","refresh_token":"outer-rt","account_id":"acct","email":"e@x","expired":"2027-01-01T00:00:00Z"},"siwc":{"access_token":"sat","refresh_token":"srt","client_id":"issued-client","device_id":"dev-1","expired":"2027-01-01T00:00:00Z"}}`)
 	cred, err := DecodeCredential(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cred.UsesChatGPT() || cred.AccessToken != "sat" || cred.ClientID != "issued-client" || cred.DeviceID != "dev-1" || !cred.Ready() {
+	if !cred.UsesChatGPT() || cred.AccessToken != "sat" || cred.ClientID != "issued-client" || cred.DeviceID != "dev-1" || !cred.Ready() || !cred.UseSIWC {
 		t.Fatalf("siwc nested decode %+v", cred)
+	}
+	if cred.Outer == nil || cred.Outer.AccessToken != "outer-at" || cred.Outer.RefreshToken != "outer-rt" {
+		t.Fatalf("outer partition dropped: %+v", cred.Outer)
 	}
 }
 

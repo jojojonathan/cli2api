@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/caigee-cmd/cli2api/internal/accounts"
+	"github.com/caigee-cmd/cli2api/internal/providers"
 )
 
 const (
@@ -50,19 +53,35 @@ const (
 	pathWhamUsage = "/wham/usage"
 
 	// Cloaking: upstream gates on the official codex CLI UA/originator.
-	UserAgent  = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
+	UserAgent  = "codex-tui/0.164.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.164.0)"
 	Originator = "codex-tui"
 
 	QuotaUnit = "rate_limit_window"
 )
 
 const (
-	refreshLead     = 5 * time.Minute
+	// outerRefreshLead matches CLIProxyAPI CodexOuterRefreshLead (feb6398): the
+	// nominal 10-day Codex OAuth JWT may be invalidated early upstream, so outer
+	// / CLI tokens refresh well ahead of expiry.
+	outerRefreshLead = 96 * time.Hour
+	// siwcRefreshLead matches CLIProxyAPI CodexSIWCRefreshLead / pi's
+	// DEFAULT_OAUTH_MINIMUM_VALIDITY_MS (5 minutes).
+	siwcRefreshLead = 5 * time.Minute
 	loginPendingTTL = 10 * time.Minute
 )
 
 // Credential is the canonical storage payload shape. Field names match the
 // CodexTokenStorage JSON CLIProxyAPI writes so import/export round-trips.
+// OuterPartition holds the ChatGPT backend (non-SIWC) OAuth tokens kept
+// alongside a Sign in with ChatGPT partition when use_siwc was imported.
+type OuterPartition struct {
+	IDToken      string `json:"id_token,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
+	LastRefresh  string `json:"last_refresh,omitempty"`
+}
+
 type Credential struct {
 	IDToken      string `json:"id_token,omitempty"`
 	AccessToken  string `json:"access_token"`
@@ -80,6 +99,13 @@ type Credential struct {
 	// closed without them rather than falling back to the CLI client.
 	ClientID string `json:"client_id,omitempty"`
 	DeviceID string `json:"device_id,omitempty"`
+	// UseSIWC is true when this credential prefers the nested Sign in with
+	// ChatGPT partition for non-Codex clients. Codex client User-Agents ignore
+	// it and must use Outer (aligned with CLIProxyAPI d946c4f).
+	UseSIWC bool `json:"use_siwc,omitempty"`
+	// Outer is the non-SIWC ChatGPT OAuth partition preserved on import so
+	// Codex client requests can use it without discarding SIWC tokens.
+	Outer *OuterPartition `json:"outer,omitempty"`
 }
 
 func DecodeCredential(payload []byte) (Credential, error) {
@@ -88,6 +114,9 @@ func DecodeCredential(payload []byte) (Credential, error) {
 		(flat.AccessToken != "" || flat.RefreshToken != "") {
 		flat.ExpiresAt = unixSeconds(flat.ExpiresAt)
 		flat.AuthMethod = normalizeAuthMethod(flat.AuthMethod)
+		if flat.Outer != nil {
+			flat.Outer.ExpiresAt = unixSeconds(flat.Outer.ExpiresAt)
+		}
 		return flat, nil
 	}
 	// Accept CLIProxyAPI's nested token_data shape, including a Sign in with
@@ -116,7 +145,7 @@ func DecodeCredential(payload []byte) (Credential, error) {
 	if err := json.Unmarshal(payload, &nested); err == nil {
 		if nested.UseSIWC != nil && *nested.UseSIWC &&
 			(nested.SIWC.AccessToken != "" || nested.SIWC.RefreshToken != "") {
-			return Credential{
+			cred := Credential{
 				IDToken:      nested.SIWC.IDToken,
 				AccessToken:  nested.SIWC.AccessToken,
 				RefreshToken: nested.SIWC.RefreshToken,
@@ -127,7 +156,20 @@ func DecodeCredential(payload []byte) (Credential, error) {
 				AuthMethod:   AuthMethodChatGPT,
 				ClientID:     nested.SIWC.ClientID,
 				DeviceID:     nested.SIWC.DeviceID,
-			}, nil
+				UseSIWC:      true,
+			}
+			// Keep the outer ChatGPT OAuth partition so Codex client requests can
+			// ignore use_siwc and still authenticate without falling back to SIWC.
+			if nested.TokenData.AccessToken != "" || nested.TokenData.RefreshToken != "" {
+				cred.Outer = &OuterPartition{
+					IDToken:      nested.TokenData.IDToken,
+					AccessToken:  nested.TokenData.AccessToken,
+					RefreshToken: nested.TokenData.RefreshToken,
+					ExpiresAt:    parseExpire(nested.TokenData.Expire),
+					LastRefresh:  nested.LastRefresh,
+				}
+			}
+			return cred, nil
 		}
 		if nested.TokenData.AccessToken != "" || nested.TokenData.RefreshToken != "" {
 			return Credential{
@@ -174,6 +216,47 @@ func normalizeAuthMethod(method string) string {
 	}
 }
 
+// UseSIWCForRequest reports whether this request should use the nested SIWC
+// partition. Codex client User-Agents always ignore use_siwc (CLIProxyAPI d946c4f).
+func (c Credential) UseSIWCForRequest(userAgent string) bool {
+	if IsCodexClientUserAgent(userAgent) {
+		return false
+	}
+	return c.UseSIWC
+}
+
+// EffectiveForRequest selects the OAuth partition for the inbound User-Agent.
+// Codex clients require the outer (non-SIWC) access_token and never fall back
+// to SIWC; other clients keep the SIWC primary when UseSIWC is set.
+func (c Credential) EffectiveForRequest(userAgent string) (Credential, error) {
+	if !c.UseSIWC || !IsCodexClientUserAgent(userAgent) {
+		return c, nil
+	}
+	if c.Outer == nil || strings.TrimSpace(c.Outer.AccessToken) == "" {
+		return Credential{}, &providers.Error{
+			Kind:    accounts.KindAuth,
+			Status:  401,
+			Message: "codex client requests require the outer OAuth access_token when use_siwc is enabled",
+		}
+	}
+	out := c
+	out.IDToken = c.Outer.IDToken
+	out.AccessToken = c.Outer.AccessToken
+	out.RefreshToken = c.Outer.RefreshToken
+	out.ExpiresAt = c.Outer.ExpiresAt
+	out.LastRefresh = c.Outer.LastRefresh
+	out.AuthMethod = AuthMethodCLI
+	out.ClientID = ""
+	out.DeviceID = ""
+	return out, nil
+}
+
+// refreshingOuter reports that EffectiveForRequest selected the outer partition
+// on a dual SIWC credential, so token refresh must only update Outer.
+func (c Credential) refreshingOuter() bool {
+	return c.UseSIWC && !c.UsesChatGPT() && c.Outer != nil
+}
+
 func ValidateCredential(payload []byte) error {
 	credential, err := DecodeCredential(payload)
 	if err != nil {
@@ -185,6 +268,16 @@ func ValidateCredential(payload []byte) error {
 	return nil
 }
 
+// refreshLead returns the proactive refresh window for this partition.
+// Sign in with ChatGPT keeps the short SIWC lead; outer / CLI OAuth uses the
+// conservative 96h lead (CLIProxyAPI feb6398).
+func (c Credential) refreshLead() time.Duration {
+	if c.UsesChatGPT() {
+		return siwcRefreshLead
+	}
+	return outerRefreshLead
+}
+
 func (c Credential) needsRefresh(now time.Time) bool {
 	if strings.TrimSpace(c.AccessToken) == "" {
 		return true
@@ -192,7 +285,7 @@ func (c Credential) needsRefresh(now time.Time) bool {
 	if c.ExpiresAt <= 0 {
 		return true
 	}
-	return now.Add(refreshLead).Unix() >= c.ExpiresAt
+	return now.Add(c.refreshLead()).Unix() >= c.ExpiresAt
 }
 
 func unixSeconds(value int64) int64 {

@@ -15,9 +15,12 @@ import { useI18n } from '@/hooks/useI18n'
 import { formatCompact, formatLatency, formatPercent } from '@/lib/format'
 import { logsHref } from '@/lib/logsLink'
 import { accountProviderFamilyLabel } from '@/lib/provider'
+import { UsageCostPanel } from '@/components/usage/UsageCostPanel'
 
 /** Rows per dimension; the server caps limit at 500. */
 const USAGE_LIMIT = 500
+
+type PageTab = 'stats' | 'cost'
 
 type UsageSortKey = 'label' | 'count' | 'success' | 'p95' | 'tokens' | 'credits' | 'cache_write'
 
@@ -82,6 +85,7 @@ function formatCredits(value: number) {
 export function UsagePage() {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const [pageTab, setPageTab] = useState<PageTab>('stats')
   const [dim, setDim] = useState<RequestStatsDim>('model')
   const [statsWindow, setStatsWindow] = useState<StatsWindow>('24')
   const [customRange, setCustomRange] = useState<DateRangeValue | null>(null)
@@ -150,28 +154,22 @@ export function UsagePage() {
     { id: 'credits', label: t('usageColCredits'), numeric: true },
   ]
 
-  return (
-    <div className="space-y-6">
-      <section className="grid gap-4 pb-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-        <div>
-          <h2 className="text-title font-semibold">{t('usageTitle')}</h2>
-          <p className="mt-1 max-w-2xl text-body leading-6 text-muted">{t('usageLead')}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <StatsWindowControls
-            value={statsWindow}
-            onChange={setStatsWindow}
-            custom={customRange}
-            onCustomChange={setCustomRange}
-            onBusy={() => setLoading(true)}
-            t={t}
-          />
-        </div>
+  const statsBody = (
+    <>
+      <section className="flex flex-wrap items-center justify-end gap-3 pb-1">
+        <StatsWindowControls
+          value={statsWindow}
+          onChange={setStatsWindow}
+          custom={customRange}
+          onCustomChange={setCustomRange}
+          onBusy={() => setLoading(true)}
+          t={t}
+        />
       </section>
 
       {error ? <PageAlert title={t('failedStats', { msg: error })} /> : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-5">
         {[
           [t('usageColRequests'), totals ? formatCompact(totals.requests) : '—', t('statsWindowHint', { window: t(STATS_WINDOW_LABEL[statsWindow]) })],
           [t('usageColSuccess'), totals ? formatPercent(totals.success_rate) : '—', totals ? `${totals.ok} / ${totals.requests}` : ''],
@@ -188,7 +186,7 @@ export function UsagePage() {
       </section>
 
       <Card className="overflow-hidden p-0">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-separator px-5 py-3">
+        <div className="flex flex-col gap-3 border-b border-separator px-5 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <Tabs selectedKey={dim} onSelectionChange={(key) => { setLoading(true); setDim(String(key) as RequestStatsDim) }}>
             <Tabs.ListContainer className="w-fit">
               <Tabs.List aria-label={t('usageTitle')}>
@@ -201,73 +199,169 @@ export function UsagePage() {
           <span className="mono text-caption text-muted">{loading ? '' : t('usageRowCount', { count: rows.length })}</span>
         </div>
         {loading ? (
-          <div className="divide-y divide-separator" aria-busy="true">
-            {Array.from({ length: 6 }, (_, index) => (
-              <div key={index} className="flex items-center gap-6 px-5 py-3.5">
-                <SkeletonBlock className="h-4 w-40" />
-                <div className="flex-1" />
-                {Array.from({ length: 6 }, (_, cell) => <SkeletonBlock key={cell} className="h-4 w-14" />)}
-              </div>
-            ))}
-          </div>
+          <>
+            <div className="divide-y divide-separator md:hidden" aria-busy="true">
+              {Array.from({ length: 4 }, (_, index) => (
+                <div key={index} className="space-y-3 px-5 py-4">
+                  <SkeletonBlock className="h-4 w-40" />
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                    {Array.from({ length: 4 }, (_, cell) => (
+                      <div key={cell} className="space-y-1.5">
+                        <SkeletonBlock className="h-3 w-12" />
+                        <SkeletonBlock className="h-4 w-16" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="hidden divide-y divide-separator md:block" aria-busy="true">
+              {Array.from({ length: 6 }, (_, index) => (
+                <div key={index} className="flex items-center gap-6 px-5 py-3.5">
+                  <SkeletonBlock className="h-4 w-40" />
+                  <div className="flex-1" />
+                  {Array.from({ length: 6 }, (_, cell) => <SkeletonBlock key={cell} className="h-4 w-14" />)}
+                </div>
+              ))}
+            </div>
+          </>
         ) : rows.length === 0 ? (
           <div className="flex items-center gap-2 px-5 py-10 text-body text-muted"><ChartBar size={16} />{t('usageEmpty')}</div>
         ) : (
-          <Table className="usage-table">
-            <Table.ScrollContainer>
-              <Table.Content
-                aria-label={t('usageTitle')}
-                sortDescriptor={{ column: sortKey, direction: sortDirection }}
-                onSortChange={(next) => {
-                  setSortKey(String(next.column) as UsageSortKey)
-                  setSortDirection(next.direction)
-                }}
-              >
-                <Table.Header>
-                  {columns.map((column) => (
-                    <Table.Column key={column.id} id={column.id} allowsSorting isRowHeader={column.id === 'label'} className={column.numeric ? 'text-right' : undefined}>
-                      {({ sortDirection: direction }) => (
-                        <Table.SortableColumnHeader sortDirection={direction} className={column.numeric ? 'justify-end' : undefined}>
-                          {column.label}
-                        </Table.SortableColumnHeader>
-                      )}
-                    </Table.Column>
-                  ))}
-                </Table.Header>
-                <Table.Body>
-                  {rows.map((row) => (
-                    <Table.Row
-                      key={row.key}
-                      id={row.key}
-                      className={row.filter && stats ? 'cursor-pointer' : undefined}
-                      onAction={row.filter && stats ? () => navigate(logsHref(row.filter ?? {}, stats.window.from, stats.window.to)) : undefined}
-                    >
-                      <Table.Cell>
-                        <div className="flex min-w-0 items-center gap-2">
-                          {dim === 'provider' && row.filter ? <ProviderMark provider={row.key} size={14} /> : null}
-                          <span className="truncate text-body font-medium">{row.label}</span>
-                          {dim === 'account' && row.label !== row.key ? <span className="mono truncate text-caption text-muted">{row.key}</span> : null}
+          <>
+            <div className="divide-y divide-separator md:hidden">
+              {rows.map((row) => {
+                const clickable = Boolean(row.filter && stats)
+                const metrics = [
+                  { label: t('usageColRequests'), value: String(row.count) },
+                  { label: t('usageColSuccess'), value: formatPercent(row.success), tone: row.success < 0.9 ? 'text-warning' : undefined },
+                  { label: t('statsLatencyP95'), value: formatLatency(row.p95) },
+                  { label: t('usageColTokens'), value: formatCompact(row.tokens), sub: `${formatCompact(row.prompt)} / ${formatCompact(row.completion)}` },
+                  { label: t('usageColCacheWrite'), value: formatCompact(row.cache_write) },
+                  { label: t('usageColCredits'), value: formatCredits(row.credits) },
+                ]
+                return (
+                  <article
+                    key={row.key}
+                    className={`space-y-3 px-5 py-4 ${clickable ? 'cursor-pointer' : ''}`}
+                    onClick={clickable ? () => navigate(logsHref(row.filter ?? {}, stats!.window.from, stats!.window.to)) : undefined}
+                    onKeyDown={clickable ? (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        navigate(logsHref(row.filter ?? {}, stats!.window.from, stats!.window.to))
+                      }
+                    } : undefined}
+                    role={clickable ? 'button' : undefined}
+                    tabIndex={clickable ? 0 : undefined}
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      {dim === 'provider' && row.filter ? <ProviderMark provider={row.key} size={14} /> : null}
+                      <span className="truncate text-body font-medium">{row.label}</span>
+                    </div>
+                    {dim === 'account' && row.label !== row.key ? <div className="mono truncate text-caption text-muted">{row.key}</div> : null}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                      {metrics.map((metric) => (
+                        <div key={metric.label} className="min-w-0 space-y-1">
+                          <div className="text-caption text-muted">{metric.label}</div>
+                          <div className={`mono text-body ${metric.tone ?? 'text-foreground'}`}>{metric.value}</div>
+                          {'sub' in metric && metric.sub ? <div className="mono text-caption text-muted">{metric.sub}</div> : null}
                         </div>
-                      </Table.Cell>
-                      <Table.Cell className="mono text-right text-body">{row.count}</Table.Cell>
-                      <Table.Cell className="mono text-right text-body">
-                        <span className={row.success < 0.9 ? 'text-warning' : undefined}>{formatPercent(row.success)}</span>
-                      </Table.Cell>
-                      <Table.Cell className="mono text-right text-body">{formatLatency(row.p95)}</Table.Cell>
-                      <Table.Cell className="text-right">
-                        <div className="mono text-body">{formatCompact(row.tokens)}</div>
-                        <div className="mono text-caption text-muted">{formatCompact(row.prompt)} / {formatCompact(row.completion)}</div>
-                      </Table.Cell>
-                      <Table.Cell className="mono text-right text-body">{formatCompact(row.cache_write)}</Table.Cell>
-                      <Table.Cell className="mono text-right text-body">{formatCredits(row.credits)}</Table.Cell>
-                    </Table.Row>
-                  ))}
-                </Table.Body>
-              </Table.Content>
-            </Table.ScrollContainer>
-          </Table>
+                      ))}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+            <Table className="usage-table hidden md:block">
+              <Table.ScrollContainer className="min-w-0 overflow-x-auto">
+                <Table.Content
+                  aria-label={t('usageTitle')}
+                  className="min-w-[48rem]"
+                  sortDescriptor={{ column: sortKey, direction: sortDirection }}
+                  onSortChange={(next) => {
+                    setSortKey(String(next.column) as UsageSortKey)
+                    setSortDirection(next.direction)
+                  }}
+                >
+                  <Table.Header>
+                    {columns.map((column) => (
+                      <Table.Column key={column.id} id={column.id} allowsSorting isRowHeader={column.id === 'label'} className={column.numeric ? 'text-right' : undefined}>
+                        {({ sortDirection: direction }) => (
+                          <Table.SortableColumnHeader sortDirection={direction} className={column.numeric ? 'justify-end' : undefined}>
+                            {column.label}
+                          </Table.SortableColumnHeader>
+                        )}
+                      </Table.Column>
+                    ))}
+                  </Table.Header>
+                  <Table.Body>
+                    {rows.map((row) => (
+                      <Table.Row
+                        key={row.key}
+                        id={row.key}
+                        className={row.filter && stats ? 'cursor-pointer' : undefined}
+                        onAction={row.filter && stats ? () => navigate(logsHref(row.filter ?? {}, stats.window.from, stats.window.to)) : undefined}
+                      >
+                        <Table.Cell>
+                          <div className="flex min-w-0 items-center gap-2">
+                            {dim === 'provider' && row.filter ? <ProviderMark provider={row.key} size={14} /> : null}
+                            <span className="truncate text-body font-medium">{row.label}</span>
+                            {dim === 'account' && row.label !== row.key ? <span className="mono truncate text-caption text-muted">{row.key}</span> : null}
+                          </div>
+                        </Table.Cell>
+                        <Table.Cell className="mono text-right text-body">{row.count}</Table.Cell>
+                        <Table.Cell className="mono text-right text-body">
+                          <span className={row.success < 0.9 ? 'text-warning' : undefined}>{formatPercent(row.success)}</span>
+                        </Table.Cell>
+                        <Table.Cell className="mono text-right text-body">{formatLatency(row.p95)}</Table.Cell>
+                        <Table.Cell className="text-right">
+                          <div className="mono text-body">{formatCompact(row.tokens)}</div>
+                          <div className="mono text-caption text-muted">{formatCompact(row.prompt)} / {formatCompact(row.completion)}</div>
+                        </Table.Cell>
+                        <Table.Cell className="mono text-right text-body">{formatCompact(row.cache_write)}</Table.Cell>
+                        <Table.Cell className="mono text-right text-body">{formatCredits(row.credits)}</Table.Cell>
+                      </Table.Row>
+                    ))}
+                  </Table.Body>
+                </Table.Content>
+              </Table.ScrollContainer>
+            </Table>
+          </>
         )}
       </Card>
+    </>
+  )
+
+  return (
+    <div className="space-y-6 sm:space-y-6">
+      <section className="pb-1">
+        <h2 className="text-title font-semibold">{t('usageTitle')}</h2>
+        <p className="mt-1 max-w-2xl text-body leading-6 text-muted">
+          {pageTab === 'cost' ? t('usageCostLead') : t('usageLead')}
+        </p>
+      </section>
+
+      <Tabs selectedKey={pageTab} onSelectionChange={(key) => setPageTab(String(key) as PageTab)}>
+        <Tabs.ListContainer className="w-fit">
+          <Tabs.List aria-label={t('usageTitle')}>
+            <Tab id="stats" className="gap-1.5 whitespace-nowrap">
+              <Tabs.Indicator className="transition-none" />
+              {t('usageStatsTab')}
+            </Tab>
+            <Tab id="cost" className="gap-1.5 whitespace-nowrap">
+              <Tabs.Indicator className="transition-none" />
+              {t('usageCostTab')}
+            </Tab>
+          </Tabs.List>
+        </Tabs.ListContainer>
+
+        <Tabs.Panel id="stats" className="space-y-6 pt-5">
+          {statsBody}
+        </Tabs.Panel>
+        <Tabs.Panel id="cost" className="pt-5">
+          <UsageCostPanel />
+        </Tabs.Panel>
+      </Tabs>
     </div>
   )
 }

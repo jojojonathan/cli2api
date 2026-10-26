@@ -3,6 +3,144 @@
 Published user-facing notes for GitHub Releases and the console update page.
 Write upcoming notes as bilingual files in `changelog/unreleased/`.
 
+## 0.7.11 - 2026-10-25
+
+### English
+
+- Accounts page: batch-import WorkBuddy hub packs with auto-detect (format / provider / region) and a confirm step to choose WorkBuddy CN or Global; other providers are detected but not imported yet. Reuses the existing import API.
+
+### 中文
+
+- 账号页批量导入：自动识别凭证 format / 供应商 / 区，确认后可选择 WorkBuddy 国内版或国际版导入；其它供应商仅识别、暂不导入。复用现有导入接口。
+
+## 0.7.10 - 2026-10-25
+
+### English
+
+- Access chat polish: collapsed thinking pill with spinner/shimmer, grouped tool calls, compact composer selects (menus open upward), message foot with copy + credits.
+- Access chat: catalog credits stay on the model picker; per-turn foot notes show tokens + credits only when the stream reports `usage.credits` / `consumed_credits`.
+- Access page: multi-turn chat stage with AffectUI-like composer (attach + compact account/model + round send in one pad); thinking / tool-call cards use surface hierarchy; Raw API and endpoints drop heavy borders. Dev preview via `?demo=1` or Preview sample.
+- Usage Cost tab leads with quota and tokens for every model; DeepSeek list-price CNY is optional and collapsed by default.
+- Fix WorkBuddy credential import camelCase decode; accept hub `workbuddy-accounts` export packs and import multiple accounts in one paste (partial success with success/fail summary).
+
+### 中文
+
+- 接入页对话抛光：思考默认一行 pill（spinner/shimmer）、工具分组折叠、Composer 控件更紧（菜单上弹）、气泡脚注复制 + credits。
+- 接入页对话：选型继续用目录 credits；本轮脚注仅在流式 `usage.credits` / `consumed_credits` 有值时显示 token + 消耗。
+- 接入页：多轮对话主舞台，Composer 一体卡（附件 + 紧凑账号/模型 + 圆形发送）；思考/工具卡靠表面层级、少描边；原始 API 与端点卡去硬边框。开发预览：`?demo=1` 或「预览样例」。
+- 用量「额度」页以各模型的订阅额度与 token 为主；DeepSeek 官方列表价折算改为可选，默认折叠。
+- 修好 WorkBuddy 凭证 camelCase 解码；支持 hub `workbuddy-accounts` 整包粘贴批量导入（尽量导入成功项，汇总成功/失败）。
+
+## 0.7.9 - 2026-10-24
+
+### English
+
+- Request-log retention is configurable via `CLI2API_LOG_RETENTION_DAYS` (default 7) and `CLI2API_LOG_MAX_ROWS` (default 20000); invalid values fall back so pruning cannot be disabled by typo. Based on external contribution [#336](https://github.com/caigee-cmd/cli2api/pull/336) by [@YunMo-yanyu](https://github.com/YunMo-yanyu).
+- Extend the existing **Usage** console page with a **Cost** tab: quota consumed across providers, DeepSeek list-price equivalent cost (peak / off-peak), stacked cost-over-time chart, per-model breakdown, and the official price table. Stats tab (requests / latency / tokens / credits by model · account · provider) is unchanged. Adds `deepseek-flash` to the pricing catalog. Credits reuse the `#361` `request_usage_details` fallback so numbers match the Stats tab. Based on external contribution [#336](https://github.com/caigee-cmd/cli2api/pull/336) by [@YunMo-yanyu](https://github.com/YunMo-yanyu).
+- WorkBuddy streaming requests now fail over when the first response byte never arrives within `WORKBUDDY_STREAM_TTFB_MS` (aligned with Qoder’s first-byte timeout), without dropping the existing 401 token-refresh path. Based on external contribution [#336](https://github.com/caigee-cmd/cli2api/pull/336) by [@YunMo-yanyu](https://github.com/YunMo-yanyu).
+
+### 中文
+
+- 请求日志保留可通过 `CLI2API_LOG_RETENTION_DAYS`（默认 7 天）与 `CLI2API_LOG_MAX_ROWS`（默认 20000 行）配置；非法值回退默认，避免误配关掉清理。基于外部贡献 [#336](https://github.com/caigee-cmd/cli2api/pull/336)（[@YunMo-yanyu](https://github.com/YunMo-yanyu)）。
+- 在现有「用量」页增加 **费用** 选项卡：跨供应商订阅额度、DeepSeek 官方列表价折合费用（高峰/闲时）、费用趋势图、按模型明细与官方价格表。统计选项卡（按模型·账号·供应商的请求/延迟/token/额度）保持不变。价格目录补上 `deepseek-flash`。额度汇总沿用 #361 的 `request_usage_details` 回退，与统计页数字一致。基于外部贡献 [#336](https://github.com/caigee-cmd/cli2api/pull/336)（[@YunMo-yanyu](https://github.com/YunMo-yanyu)）。
+- WorkBuddy 流式请求在 `WORKBUDDY_STREAM_TTFB_MS` 内收不到首字节时会切换账号（对齐 Qoder 首字节超时），并保留原有 401 刷新 token 路径。基于外部贡献 [#336](https://github.com/caigee-cmd/cli2api/pull/336)（[@YunMo-yanyu](https://github.com/YunMo-yanyu)）。
+
+## 0.7.8 - 2026-10-24
+
+### English
+
+- Access page: rename nav to Access & try / 接入与调试, and split into Chat (single-turn streaming) and Native API (playground + curl) tabs with shared account, model, and Base URL.
+- Providers catalog: keep「自定义」reasoning controls from stretching desktop table columns, and stack label + select on mobile cards.
+- Align Qoder Cosy fingerprint with hub v1.7.3: CLI 1.1.75, desktop Cosy-Version 0.4.8, undici User-Agent, business/scene/clientip headers, lowercase `agree` data-policy; machineos on all COSY requests, hostname SSE-only.
+- Bump Codex outbound cloaking User-Agent to official stable `0.164.0`.
+- Pass through inbound `X-Codex-Turn-Metadata`, `X-Codex-Turn-State`, and `X-Codex-Window-Id` on Codex OAuth (non-SIWC) upstream requests, matching CLIProxyAPI’s narrow EnsureHeader set.
+
+### 中文
+
+- 接入页：侧栏改名为「接入与调试」，拆成「对话」（单轮流式）与「原生 API」（调试台 + curl）两个页签，账号、模型和 Base URL 共用。
+- 模型目录：自定义推理强度控件不再撑宽桌面表格列；移动端卡片改为标签在上、选择器独占一行。
+- Qoder Cosy 指纹对齐 hub v1.7.3：CLI 1.1.75、桌面签到 Cosy-Version 0.4.8、undici User-Agent、business/scene/clientip 头、data-policy 小写 `agree`；machineos 全 COSY 请求携带，hostname 仅 SSE。
+- Codex 出站伪装 User-Agent 升至官方稳定版 `0.164.0`。
+- Codex OAuth（非 SIWC）上游透传入站 `X-Codex-Turn-Metadata` / `X-Codex-Turn-State` / `X-Codex-Window-Id`，范围与 CLIProxyAPI EnsureHeader 一致、不扩大。
+
+## 0.7.7 - 2026-10-24
+
+### English
+
+- Model catalogs now expose the image-input capability each provider already reports (`WorkBuddy.supportsImages`, QwenWork `is_vl`, Devin and Codex modalities) as `supports_images` on `/v1/models` and `/api/models`. The field appears only when the provider declares support; a route merged across regions keeps it only when every region declares it; Qoder mirrors the worker catalog's `is_vl` when present.
+- The documented image boundary now matches the upstream catalogs: WorkBuddy's DeepSeek V4 / V4.1, GLM, Kimi, and other `supportsImages` models accept images through the gateway, while Trae, Command, and Zhipu do not declare image input.
+- Overview and Usage get looser mobile density: stacked label/value pairs, card lists for dense tables on small screens, and stronger horizontal scroll on desktop tables—without heavier borders.
+- When a new release is available, the sidebar update entry keeps its accent styling and adds a light GSAP left-right nudge every few seconds (skipped under prefers-reduced-motion).
+
+### 中文
+
+- 模型目录新增 `supports_images`：把各 Provider 已解析到的图片能力（WorkBuddy `supportsImages`、QwenWork `is_vl`、Devin 与 Codex 的模态声明）透出到 `/v1/models` 与 `/api/models`。只有上游明确声明时才出现；多地域合并的路由要求每个地域都声明；Qoder 在 worker 目录返回 `is_vl` 时同步透出。
+- 文档里的图片能力边界与上游目录对齐：WorkBuddy 的 DeepSeek V4 / V4.1、GLM、Kimi 等 `supportsImages` 模型可以通过网关识图；Trae、Command、Zhipu 未声明图片输入。
+- Overview / Usage 小屏疏密度：标签与数值上下排、密集表格改卡片列表，桌面加强横向滚动；不加粗边框。
+- 有新版本时，侧栏左下角更新入口保留 accent，并用很轻的 GSAP 左右晃一下（每隔几秒；减动效时只留颜色/圆点）。
+
+## 0.7.6 - 2026-10-24
+
+### English
+
+- Codex outer / CLI OAuth now proactively refreshes with a 96-hour lead (aligned with CLIProxyAPI `CodexOuterRefreshLead`), while Sign in with ChatGPT (SIWC) keeps the short 5-minute lead—so the nominal 10-day JWT is renewed before early upstream invalidation without changing SIWC behavior.
+- Codex model catalog adds `gpt-6.1-sol` (GPT-6.1-Sol) from the upstream client model list, with the same slim fields as other `gpt-*` entries.
+- Add QwenWork CN and Global daily check-in: account cards now expose the manual action and the off-by-default automatic switch, with per-account and provider default times shared with the existing scheduler.
+- QwenWork check-in tries the desktop client's `daily-check-in` claim API first, then falls back to today's server-granted free credits: CN reads the daily wallet balance, Global reports the gateway gap (claim route 404) instead of a fake success.
+
+### 中文
+
+- Codex outer / CLI OAuth 主动刷新提前量对齐 CLIProxyAPI 的 `CodexOuterRefreshLead`（96 小时），Sign in with ChatGPT（SIWC）仍保持 5 分钟短 lead，以便在名义 10 天 JWT 被上游提前作废前续期，且不改变 SIWC 行为。
+- Codex 模型目录新增上游客户端列表中的 `gpt-6.1-sol`（GPT-6.1-Sol），字段结构与其它 `gpt-*` 条目一致。
+- 新增 QwenWork 国内版/国际版每日签到：账号卡片提供手动签到和默认关闭的自动签到开关，沿用现有的账号级/供应商级签到时间调度。
+- QwenWork 签到先调用桌面客户端的每日签到领取接口，接口未开放时改为核对当日服务端发放的免费积分：国内版读取钱包日额度，国际版明确记录网关未开放的原因，不伪造成功。
+
+## 0.7.5 - 2026-10-23
+
+### English
+
+- Scheduled check-in and WorkBuddy keepalive now rate-limit across accounts: each 30s maintenance tick handles at most 2 due accounts, with ~2s + small FNV jitter between them, so a large AutoCheckin fleet no longer bursts upstream in one tick after the configured time (or after 22:00 for keepalive).
+
+### 中文
+
+- 定时签到与 WorkBuddy Keepalive 现按跨账号限速：每个 30 秒 maintenance tick 最多处理 2 个到期账号，账号之间约 2 秒并加小幅 FNV jitter，避免大量 AutoCheckin 账号在配置时刻（或 Keepalive 的 22:00）后同一 tick 背靠背打上游。
+
+## 0.7.4 - 2026-10-23
+
+### English
+
+- Non-lite Codex requests that include tools now preserve an explicit `parallel_tool_calls: false` from the caller instead of forcing `true` (aligned with CLIProxyAPI). Absent values still default to `true`.
+- Codex credentials that enable `use_siwc` now keep both the outer ChatGPT OAuth and SIWC partitions. Requests whose User-Agent identifies an official Codex client (`codex-desktop`, `Codex Desktop`, `codex-rs`, `codex_cli_rs`, `codex-tui`, `codex_exec`) ignore `use_siwc`, use the outer token, and fail closed with 401 when the outer `access_token` is missing; refresh on that path only updates the outer partition.
+- Overview now shows a credit-expiry distribution: credits grouped by the calendar day they lapse, one colour per account, plus a soonest-expiry table (numeric columns centred) with the daily burn rate needed to spend each batch before it expires (FEFO). Already-expired packages that still hold remain appear in a dedicated bucket.
+- Overview adds a usage breakdown table with token split (prompt / completion / total), prefix-cache hit rate, error count and latency, switchable between account / model / realm dimensions and sortable by total tokens, requests, errors or latency, following the selected window (1h / 24h / 7d / 30d / custom). The 30s / visibility refresh quietly reloads this panel with the traffic chart.
+- Overview adds a credit deduction history that sums upstream `usage.credit` per account and per model, with KPI tiles for credits deducted, matched tokens, average credits per 1M tokens, valid samples and cache hit rate; requests without a credit reading are excluded and nothing is back-filled, model rates come from the regional price catalog. Credit SQL shares one nullable expression with the #361 zero-coalesced form.
+- Overview time switcher gains a **Today** option (calendar day since local midnight → now), placed before 1h.
+- Overview now defaults to the Today window on load (was 24h).
+- WorkBuddy payload sanitization now rewrites DeepSeek Harness identity sentences and the DSH Web GUI paragraph (and reduces the `DeepSeek Harness` brand prose) on system / developer / assistant messages, matching upstream 11-128 channel-fingerprint fixes. User and tool messages stay untouched.
+- WorkBuddy chat no longer treats every post-401 token refresh failure as `login_required`: only real session-dead / auth refresh failures keep that path; transport and 5xx refresh errors stay `unavailable` with a short pool cooldown and a diagnostic Observe entry.
+
+### 中文
+
+- 非 lite 且带 tools 的 Codex 请求会保留调用方显式传入的 `parallel_tool_calls: false`，不再强制改成 `true`（与 CLIProxyAPI 对齐）；未传时仍默认 `true`。
+- 启用 `use_siwc` 的 Codex 凭据会同时保留 outer ChatGPT OAuth 与 SIWC 分区。入站 User-Agent 识别为官方 Codex 客户端（`codex-desktop` / `Codex Desktop` / `codex-rs` / `codex_cli_rs` / `codex-tui` / `codex_exec`）时忽略 `use_siwc`、改用 outer token；缺少 outer `access_token` 则直接 401，且该路径下的刷新只更新 outer。
+- 概览新增「积分到期分布」：按自然日聚合各账号即将失效的积分，颜色区分账号；并附最近到期提醒表（数字列居中），给出该日到期积分与到期前需要的日均消耗（FEFO）。过期但仍有余额的包单独成桶。
+- 概览新增「用量明细」：按维度展示 token 构成（Prompt / Completion / 合计）、前缀缓存命中率、失败数与延迟，可在账号 / 模型 / 域之间切换，并支持按合计 Token、请求数、失败数、平均延迟排序，跟随上方所选时间窗口（1 小时 / 24 小时 / 7 天 / 30 天 / 自定义）。30 秒 / 切回可见时与流量图一并 quiet 刷新。
+- 概览新增「积分扣除历史」：按账号与模型汇总上游 `usage.credit`，顶部 KPI 展示扣除积分、匹配 Token、平均积分 / 1M Token、有效样本与缓存命中率；未观测到积分的请求不计入、不做任何回填，模型倍率取自区域价格目录。积分 SQL 与 #361 收敛为可空 / 补零两种包装。
+- 概览页顶部时间切换新增「今天」选项（按本地零点到当前的日历日统计），排在「1小时」之前。
+- 概览页默认时间窗口改为「今天」（原为 24 小时）。
+- WorkBuddy 出站清洗对齐上游 11-128 渠道指纹修复：对 system / developer / assistant 改写 DeepSeek Harness 自我介绍句与 DSH Web GUI 描述段，并将散文中的 `DeepSeek Harness` 缩为 `DeepSeek`；user / tool 消息保持原样。
+- WorkBuddy 聊天在 401 后刷新 token 失败时不再一律标成 `login_required`：仅真实 session-dead / auth 刷新失败保留该路径；运输错误与 5xx 刷新失败保持 `unavailable`，走池短冷却，并用现有 Observe 记下可诊断原因。
+
+## 0.7.3 - 2026-10-23
+
+### English
+
+- Current concurrency now tracks live proxy requests (Acquire/Release on the executor). `/api/live` and the sidebar update within a few seconds; health probes no longer overwrite in-flight counts.
+
+### 中文
+
+- 「当前并发」改为按代理正在处理的请求实时加减；`/api/live` 与侧边栏几秒内跟上，健康探活不再覆盖进行中的并发数。
+
 ## 0.7.2 - 2026-10-22
 
 ### English
