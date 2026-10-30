@@ -28,13 +28,34 @@ const FORMAT_TO_PROVIDER: Record<string, string> = {
   'codex-oauth-v1': 'codex',
   'zhipu-key-v1': 'zhipu',
   'qwenwork-oauth-v1': 'qwenwork',
+  'meta-oauth-v1': 'meta',
+  'meta-key-v1': 'meta',
 }
 
-const CN_DOMAIN_MARKERS = ['codebuddy.cn']
+const CN_DOMAIN_MARKERS = ['codebuddy.cn', 'workbuddy.cn']
 const GLOBAL_DOMAIN_MARKERS = ['workbuddy.ai', 'workbuddy.com']
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** Normalize format / exportType aliases (e.g. WorkBuddy-accounts → workbuddy-accounts). */
+function normalizeFormatAlias(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
+  const lower = trimmed.toLowerCase()
+  if (lower === 'workbuddy-accounts') return 'workbuddy-accounts'
+  return lower
+}
+
+function readFormatHint(bundle: Record<string, unknown>): string {
+  if (typeof bundle.format === 'string' && bundle.format.trim()) {
+    return normalizeFormatAlias(bundle.format)
+  }
+  if (typeof bundle.exportType === 'string' && bundle.exportType.trim()) {
+    return normalizeFormatAlias(bundle.exportType)
+  }
+  return ''
 }
 
 function collectDomains(bundle: Record<string, unknown>): string[] {
@@ -44,9 +65,13 @@ function collectDomains(bundle: Record<string, unknown>): string[] {
   }
   push(bundle.domain)
   if (isPlainObject(bundle.account)) push(bundle.account.domain)
+  if (isPlainObject(bundle.auth)) push(bundle.auth.domain)
   if (Array.isArray(bundle.accounts)) {
     for (const entry of bundle.accounts) {
-      if (isPlainObject(entry)) push(entry.domain)
+      if (!isPlainObject(entry)) continue
+      push(entry.domain)
+      if (isPlainObject(entry.account)) push(entry.account.domain)
+      if (isPlainObject(entry.auth)) push(entry.auth.domain)
     }
   }
   return out
@@ -71,7 +96,17 @@ function hasTokenField(entry: Record<string, unknown>) {
 
 function looksLikeWorkbuddyAccountsEntry(entry: unknown): boolean {
   if (!isPlainObject(entry)) return false
-  return hasTokenField(entry) || typeof entry.domain === 'string' || typeof entry.uid === 'string'
+  if (hasTokenField(entry) || typeof entry.domain === 'string' || typeof entry.uid === 'string') {
+    return true
+  }
+  // Official client export: nested { account, auth }.
+  if (isPlainObject(entry.account) || isPlainObject(entry.auth)) {
+    const account = isPlainObject(entry.account) ? entry.account : null
+    const auth = isPlainObject(entry.auth) ? entry.auth : null
+    if (auth && (hasTokenField(auth) || typeof auth.domain === 'string')) return true
+    if (account && (typeof account.uid === 'string' || typeof account.domain === 'string')) return true
+  }
+  return false
 }
 
 function detectWorkbuddyRegion(bundle: Record<string, unknown>): {
@@ -114,10 +149,25 @@ function detectByShape(bundle: Record<string, unknown>): {
   if (hasTokenField(bundle) || (isPlainObject(bundle.account) && hasTokenField(bundle.account)) || isPlainObject(bundle.auth)) {
     return { format: 'workbuddy-oauth-v1', provider: 'workbuddy', confidence: 'low' }
   }
+  if (
+    typeof bundle.dca_token === 'string'
+    || typeof bundle.dcaToken === 'string'
+    || (typeof bundle.access_token === 'string' && String(bundle.access_token).startsWith('dca:'))
+    || (typeof bundle.accessToken === 'string' && String(bundle.accessToken).startsWith('dca:'))
+  ) {
+    return { format: 'meta-oauth-v1', provider: 'meta', confidence: 'medium' }
+  }
   if (typeof bundle.api_key === 'string' || typeof bundle.apiKey === 'string') {
-    // Ambiguous between zhipu / command — leave provider null unless more hints.
+    // Ambiguous between zhipu / command / meta — leave provider null unless more hints.
     if (typeof bundle.organization === 'string' || typeof bundle.project === 'string') {
       return { format: 'zhipu-key-v1', provider: 'zhipu', confidence: 'low' }
+    }
+    if (
+      typeof bundle.base_url === 'string' && String(bundle.base_url).includes('meta.ai')
+      || typeof bundle.baseUrl === 'string' && String(bundle.baseUrl).includes('meta.ai')
+      || typeof bundle.email === 'string'
+    ) {
+      return { format: 'meta-key-v1', provider: 'meta', confidence: 'low' }
     }
     return { format: 'command-key-v1', provider: 'command', confidence: 'low' }
   }
@@ -142,8 +192,13 @@ export function detectImportBundle(raw: unknown): ImportDetectResult {
   }
 
   const warnings: string[] = []
-  const formatField = typeof raw.format === 'string' ? raw.format.trim() : ''
-  let format: string | null = formatField || null
+  const formatHint = readFormatHint(raw)
+  // Raw (pre-normalize) field for unknown_format warning when neither format nor exportType maps.
+  const rawFormatField = typeof raw.format === 'string' ? raw.format.trim() : ''
+  const rawExportType = typeof raw.exportType === 'string' ? raw.exportType.trim() : ''
+  const rawHintForUnknown = rawFormatField || rawExportType
+
+  let format: string | null = formatHint || null
   let provider: string | null = format ? (FORMAT_TO_PROVIDER[format] ?? null) : null
   let confidence: ImportDetectConfidence = format && provider ? 'high' : 'low'
 
@@ -151,8 +206,8 @@ export function detectImportBundle(raw: unknown): ImportDetectResult {
     const shaped = detectByShape(raw)
     format = format || shaped.format
     provider = shaped.provider
-    confidence = formatField && !FORMAT_TO_PROVIDER[formatField] ? 'low' : shaped.confidence
-    if (formatField && !FORMAT_TO_PROVIDER[formatField]) {
+    confidence = formatHint && !FORMAT_TO_PROVIDER[formatHint] ? 'low' : shaped.confidence
+    if (rawHintForUnknown && !FORMAT_TO_PROVIDER[formatHint]) {
       warnings.push('unknown_format')
     }
   }

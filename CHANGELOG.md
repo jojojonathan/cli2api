@@ -3,6 +3,156 @@
 Published user-facing notes for GitHub Releases and the console update page.
 Write upcoming notes as bilingual files in `changelog/unreleased/`.
 
+## 0.7.24 - 2026-10-29
+
+### English
+
+- 1. Overview InflightLiveCard selecting (选号) wait rail is visible again: expanded `/api/live` polls at 400ms, 1.6s display dwell (Acquire still immediate), and queue→slot fly-in uses GSAP MotionPath into the bound concurrency cell; cell model/elapsed stays hidden until the fly lands (or a short grace if skipped).
+- 2. `/api/live` adds `occupancy` from BoundRequests: each in-flight request maps to its own concurrency cell (model + Bind elapsed). Finishing cells fly to Done/Failed from their own rect (`recent_completions.request_id`), staggered when several finish together — not one shared account animation.
+- 3. Worker rail and wait rail use GSAP FLIP for yield/reorder: busy rises with a drag-up feel; remaining wait pills slide up into vacated gaps without fighting the next queue→slot fly.
+- 4. Overview Account pool collapses cooling accounts into a summary chip (`N cooling`); details expand on click with a quiet secondary wash. Ready workers stay primary in the list.
+
+### 中文
+
+- 1. Overview「实时进行中」选号/排队重新可见：展开后 `/api/live` 400ms 轮询、选号展示约 1.6s（Acquire 不拖延）；排队→槽位用 GSAP 弧线滑入 Bind 并发格，模型/计秒等飞入落地后再显示（飞不起来则短 grace）。
+- 2. `/api/live` 增加 `occupancy`（BoundRequests）：每个在途请求占一个并发格（各格模型与 Bind 秒数）；结束时各格从自身飞向完成/失败（`recent_completions.request_id`），同帧多格会错开——不是整账号共用一个飞出动画。
+- 3. Worker 轨与等待轨用 GSAP FLIP 避让上顶：busy 上浮、空闲下沉；选号 pill 飞走后剩余排队上滑补位，不和下一次飞入打架。
+- 4. Overview「账号池」将冷却账号收成摘要 chip（「N 冷却」），点击后以安静次级底展开明细；列表优先展示就绪 worker。
+
+## 0.7.23 - 2026-10-29
+
+### English
+
+- 1. Overview InflightLiveCard slot→Done/Failed fly-out now scales down toward the outcome control (shrink in flight) instead of staying near full slot size; after the hairline flash the Done/Failed pill does a short left-right wiggle + scale (stuffed-in feel).
+- 2. Overview InflightLiveCard waiting rail keeps a selecting (选号) request visible on `/api/live` `queue` for at least 500ms after Start even after Bind — display-only; Acquire / pickNext are not delayed.
+- 3. Overview InflightLiveCard Done/Failed are session counters while the card is expanded (bumped from live completions), not historical totals; rate-limit remaining chips, depth band labels, and cooldown pause styling are removed so the card stays in-progress only. Outcome sinks use a clearer icon chip + label.
+
+### 中文
+
+- 1. Overview「实时进行中」槽位→完成/失败飞出动画改为飞行中缩小落向结局按钮；落地描边闪一下后，完成/失败块再左右轻晃并缩放一点，像被塞进去。
+- 2. Overview「实时进行中」等待队列在 Start 后至少保留 500ms 选号投影（即使已 Bind），仅影响 `/api/live` `queue` 展示，不拖延 Acquire / pickNext。
+- 3. Overview「实时进行中」完成/失败改为展开会话内计数（随 live 完成事件累加），不是历史总量；去掉顶部限流剩余、深度图限流色带标签与冷却暂停样式，卡片只展示进行中；结局块图标与标签更清晰。
+
+## 0.7.22 - 2026-10-29
+
+### English
+
+- 1. Overview InflightLiveCard waiting rail now shows real selecting (选号) requests from `/api/live` `queue` (Prepare → pool Acquire), reusing existing `request_logs` statuses (`started` / `streaming` / terminal) instead of a parallel inflight API.
+- 2. Worker rail order is busy → available → cooldown, and rate-limit remaining time formats with hours when the window is long enough (`Nh Nm`).
+
+### 中文
+
+- 1. Overview「实时进行中」等待队列改为读取 `/api/live` 的 `queue`（Prepare → 选号 → Acquire），复用现有 `request_logs` 状态（`started` / `streaming` / 终态），不另开 `/api/inflight*`。
+- 2. 账号槽排序为忙碌 → 空闲 → 冷却，限流剩余时间在足够长时按小时显示（`Nh Nm`）。
+
+## 0.7.21 - 2026-10-29
+
+### English
+
+- 1. Overview adds a collapsible「Live now」card: expand from the concurrency strip to see live account slots (ProviderMark, concurrency cells, real elapsed + shimmer), queue→slot / Done·Failed fly-outs, and amber rate-limit bands from `/api/live` (`workers` / `rate_limits` / `sticky`). Idle live shows zeros; mock demo only when live is unavailable.
+- 2. Accounts batch import accepts official WorkBuddy client export packs (`exportType: WorkBuddy-accounts`, nested `{account, auth}`); `workbuddy.cn` maps to the CN region like `codebuddy.cn`.
+- 3. Logs and Usage can filter by API key: request logs record which named console key issued each call, and `GET /api/logs/requests|stats|usage` plus `GET /api/usage/cost` accept `api_key=<key id>` (console-key traffic stays unattributed).
+- 4. Access chat Flat polish: softer history-rail wash, stage continuous with the page, quieter sidebar selected/hover, softer user bubble and composer — Overview / modal solid-glass untouched.
+- 5. Connection-level failures (dial, TLS handshake, reset) no longer cool the account or fail over: the client gets the transport error and the account stays routable (avoids single-account「all accounts are cooling down」loops).
+- 6. Qoder and WorkBuddy stream first-byte default is now 60s (`QODER_STREAM_TTFB_MS` / `WORKBUDDY_STREAM_TTFB_MS`, was 30s) so thinking-model cold starts get longer before failover; set either env to keep the old deadline.
+
+### 中文
+
+- 1. Overview 新增可折叠「实时进行中」卡：从并发条展开后，按 `/api/live` 投影展示账号槽（ProviderMark、并发格、真实耗时与流光）、队列→槽位 / 完成·失败飞出，以及琥珀限流色带。空闲 live 显示 0；仅 live 不可用时跑 mock 演示。
+- 2. 账号批量导入支持 WorkBuddy 官方客户端导出包（`exportType: WorkBuddy-accounts`、嵌套 `{account, auth}`），并将 `workbuddy.cn` 识别为国内区（与 `codebuddy.cn` 一致）。
+- 3. 日志页与用量页支持按 API 密钥筛选：请求日志记录具名控制台密钥；`GET /api/logs/requests|stats|usage` 与 `GET /api/usage/cost` 接受 `api_key=<密钥 id>`（控制台密钥流量不计名）。
+- 4. Access 聊天 Flat 回拨：历史轨柔和冷洗、舞台与页面连续、侧栏选中/悬停更安静、用户气泡与作曲区软化——Overview / 弹层 solid-glass 不动。
+- 5. 连接层失败（拨号、TLS 握手、连接重置）不再给账号记冷却、也不再换号：客户端直接收到链路错误，账号保持可路由（避免单账号「所有账号都在冷却」死循环）。
+- 6. Qoder / WorkBuddy 流式首字节默认时限改为 60 秒（`QODER_STREAM_TTFB_MS` / `WORKBUDDY_STREAM_TTFB_MS`，原 30 秒），思考模型冷启动可多等一会再切号；设对应环境变量可恢复旧时限。
+
+## 0.7.20 - 2026-10-28
+
+### English
+
+- Access Chat uses clearer solid-glass contrast and a stronger history-rail separator.
+- Raw API shares the Chat account/model pickers and can switch among Chat Completions, Anthropic Messages, and OpenAI Responses.
+- Logs merges Latency and TTFT into one Timing column with three rows: first token, total latency, and output tok/s.
+- Access assistant replies show the same timing block after a stream finishes (client-side tok/s from completion tokens).
+
+### 中文
+
+- Access 聊天区对比度更清晰（solid-glass），历史侧栏分隔更明显。
+- 原始 API 与聊天共用账号/模型选择，并可在 Chat Completions、Anthropic Messages、OpenAI Responses 三种格式间切换。
+- 日志页将延迟与首字耗时合并为一列「延迟」，三行展示：首字、总耗时、输出 tok/s。
+- Access 助手回复在流式结束后显示同样的延迟块（客户端用 completion tokens 估算 tok/s）。
+
+## 0.7.19 - 2026-10-28
+
+### English
+
+- Access page uses top-level Chat | Raw API tabs (no raw-API drawer).
+- Chat feels like a playground: collapsible thinking, light tool blocks, stream segment fade-in, composer model/account bottom-right, and a collapsible in-page history rail.
+- Add Account wizard stacks name and advanced fields (label above full-width controls); max concurrency and priority share a compact two-column row.
+- Modal and provider tiles use solid-glass card tokens; picker is a 2-column tile grid with single-line truncated labels, and provider icons blend into the tile surface.
+- Add Account dialog width is `36rem` with a shared `sm:min-h-[36rem]` so the picker and form steps stay similarly tall (body scrolls inside when content overflows).
+
+### 中文
+
+- Access 页改为顶层「聊天 | 原始 API」标签（去掉原始 API 抽屉）。
+- 聊天侧具备 playground 手感：可折叠思考、轻量工具块、流式段落淡入、作曲区右下模型/账号，以及可折叠的页内历史侧栏。
+- 添加账号向导改为标签在上、控件通栏堆叠；最大并发与优先级并排两列。
+- 弹窗与提供商磁贴沿用 solid-glass 卡片质感；选择步为两列磁贴、单行截断标签，图标融入磁贴底色。
+- 添加账号弹窗宽度 `36rem`，并设共用 `sm:min-h-[36rem]`，使选择步与表单步高度接近（内容超出时在弹窗体内滚动）。
+
+## 0.7.18 - 2026-10-28
+
+### English
+
+- Bump Codex outbound cloaking User-Agent to official stable `0.165.0` (`rust-v0.165.0`). CPA pin stays at 0.154; 0.166 alpha held.
+- WorkBuddy outbound sanitize now rewrites the DSH file-reference sentence (`paths the user` → `paths that the user`) on system / developer / assistant messages, matching hub v1.9.0 / #684 so the full FILE_REFERENCE_PROMPT block no longer trips 11-128. User and tool messages stay untouched.
+
+### 中文
+
+- Codex 出站伪装 User-Agent 升至官方稳定版 `0.165.0`（`rust-v0.165.0`）。CPA pin 仍为 0.154；暂不跟 0.166 alpha。
+- WorkBuddy 出站清洗对齐 hub v1.9.0 / #684：对 system / developer / assistant 中的 DSH 文件引用句补入 `that`（`paths the user` → `paths that the user`），避免整段 FILE_REFERENCE_PROMPT 触发 11-128；user / tool 消息保持原样。
+
+## 0.7.17 - 2026-10-28
+
+### English
+
+- Add Account login step: primary actions sit in the modal footer (no full-width ink bar); method chips match the console FilterToggle (labels only).
+
+### 中文
+
+- 添加账号登录步骤：主操作改到弹窗页脚（去掉通栏墨色条）；登录方式分段与控制台 FilterToggle 一致（仅文字）。
+
+## 0.7.16 - 2026-10-28
+
+### English
+
+- Add Account picker shows a small CaiAI hosted soft link under the provider tiles (homepage, not a fake provider card).
+- CaiAI empty-state soft link now opens the homepage (`https://caiaiu.com`) instead of the affiliate register URL.
+- Add Account picker dialog is slightly narrower (`max-w-5xl`) while keeping the 3-column tile grid.
+- Add Muse (Meta) as an experimental login-source provider (`meta`, alias `muse`): device-code OAuth against auth.meta.com, mint LLM keys at api.meta.ai, Responses chat with encrypted_content shape validation, and optional Meta Model API key paste.
+- Console Add Account picker shows a Muse (Meta) tile; model prefixes accept `meta/` (and `muse/` resolves to `meta`).
+- Muse (Meta) device-code login and API-key mint now use the account `proxy_url` when set (else global), matching chat/Responses and CPA credential→global priority.
+
+### 中文
+
+- 添加账号选择弹窗在提供商磁贴下方增加小号 CaiAI 托管软链（首页，非假提供商卡片）。
+- 空态 CaiAI 软链改为打开首页 `https://caiaiu.com`，去掉注册页 affiliate 参数。
+- 添加账号选择弹窗略收窄为 `max-w-5xl`，仍保持三列磁贴布局。
+- 新增实验性登录源 Muse (Meta)（`meta`，别名 `muse`）：走 auth.meta.com 设备码授权、在 api.meta.ai 兑换 LLM Key，聊天走 Responses，并对 encrypted_content 做形状校验透传；也可粘贴 Meta Model API Key。
+- 控制台「添加账号」出现 Muse (Meta) 磁贴；模型前缀支持 `meta/`（`muse/` 会解析到 `meta`）。
+- Muse (Meta) 设备码登录与 API Key 兑换在设置了账号 `proxy_url` 时走账号代理（否则全局），与聊天/Responses 及 CPA credential→global 优先级一致。
+
+## 0.7.15 - 2026-10-27
+
+### English
+
+- Add-account picker uses Magpie-style grouped provider tiles (Subscriptions / Experimental) for real login sources only.
+- Empty Accounts (and Access when no accounts) show a skippable CaiAI hosted soft link, not a fake provider card.
+
+### 中文
+
+- 添加账号第一步改为 Magpie 风格的分组磁贴（稳定订阅 / 实验性），仅展示真实登录源。
+- 账号列表为空时（Access 无账号时同理）显示可跳过的 CaiAI 托管软链，不做假 provider 卡片。
+
 ## 0.7.14 - 2026-10-27
 
 ### English

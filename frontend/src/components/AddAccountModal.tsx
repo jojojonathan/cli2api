@@ -1,10 +1,11 @@
 import { CopyIcon } from '@/components/motion/CopyIcon'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { duration, ease, gsap } from '@/lib/motion'
-import { Button, Input, Modal, NumberField, TextArea } from '@heroui/react'
+import { Button, Description, Input, Label, Modal, NumberField, TextArea } from '@heroui/react'
 import { ArrowSquareOut, CaretLeft, CaretRight, CheckCircle, FileCode, Key, ShieldCheck, X } from '@phosphor-icons/react'
 import { copyText } from '@/lib/clipboard'
 import { BrandMark } from '@/components/BrandMark'
+import { CaiaiSoftLink } from '@/components/CaiaiSoftLink'
 import { ProviderMark } from '@/components/ProviderMark'
 import { CompactSwitch } from '@/components/ui/CompactSwitch'
 import { FilterToggle } from '@/components/ui/FilterToggle'
@@ -66,6 +67,7 @@ const labelKeys: Record<string, string> = {
   'qwenwork-global': 'accountTypeQwenworkGlobal',
   'qwenwork-cn': 'accountTypeQwenworkCN',
   'kimi-cn': 'accountTypeKimiCN',
+  'meta-global': 'accountTypeMetaGlobal',
 }
 
 const hintKeys: Record<string, string> = {
@@ -81,6 +83,7 @@ const hintKeys: Record<string, string> = {
   'qwenwork-global': 'accountTypeQwenworkGlobalHint',
   'qwenwork-cn': 'accountTypeQwenworkCNHint',
   'kimi-cn': 'accountTypeKimiCNHint',
+  'meta-global': 'accountTypeMetaGlobalHint',
 }
 
 async function loadProviderOptions(): Promise<ProviderOption[]> {
@@ -519,11 +522,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
   const isZhipu = activeOption?.provider === 'zhipu'
   const methodOptions = [
     activeOption?.descriptor.capabilities?.browser_login !== false
-      ? { value: 'browser' as const, label: t('tabBrowser'), icon: <ShieldCheck size={16} /> }
+      ? { value: 'browser' as const, label: t('tabBrowser') }
       : null,
-    showPatTab ? { value: 'pat' as const, label: t('tabPat'), icon: <Key size={16} /> } : null,
-    showImportTab ? { value: 'import' as const, label: t('tabImport'), icon: <FileCode size={16} /> } : null,
-  ].filter(Boolean) as Array<{ value: TabKey; label: string; icon: React.ReactNode }>
+    showPatTab ? { value: 'pat' as const, label: t('tabPat') } : null,
+    showImportTab ? { value: 'import' as const, label: t('tabImport') } : null,
+  ].filter(Boolean) as Array<{ value: TabKey; label: string }>
 
   const tabLead = tab === 'browser'
     ? t(activeOption?.provider === 'codex' ? 'wizardCodexBrowserLead' : 'wizardBrowserLead')
@@ -541,9 +544,8 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
         <Modal.Container
           size="lg"
           scroll="inside"
-          className={step === 'method' ? 'sm:max-w-6xl' : 'sm:max-w-5xl'}
         >
-          <Modal.Dialog className={step === 'method' ? 'w-full max-w-6xl' : 'w-full max-w-5xl'}>
+          <Modal.Dialog className="w-full sm:w-[36rem] sm:max-w-[calc(100vw-2rem)] sm:min-h-[36rem]">
             <Modal.Header className="relative items-center justify-center px-12 pt-5 text-center">
               <div className="min-w-0">
                 <Modal.Heading className="text-section font-semibold">{t('addAccountTitle')}</Modal.Heading>
@@ -582,10 +584,13 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                       />
                     )}
                   </section>
+                  <div className="mt-4 text-center">
+                    <CaiaiSoftLink className="text-xs" />
+                  </div>
                 </>
               ) : (
                 <>
-                  <div className="flex items-center gap-3 rounded-lg bg-surface-secondary/45 px-3 py-2.5">
+                  <div className="card flex flex-row items-center gap-3 rounded-xl bg-surface px-3 py-2.5">
                     <span className="shrink-0"><ProviderMark provider={activeOption?.provider} size={18} /></span>
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-body font-medium text-foreground">{activeOption ? optionLabel(activeOption, t) : t('accountType')}</div>
@@ -596,16 +601,17 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                     </Button>
                   </div>
                   <div className="mt-4 space-y-3">
-                    <FormRow label={t('accountName')}>
+                    <div className="flex flex-col gap-1.5">
+                      <Label className="text-body font-medium text-muted">{t('accountName')}</Label>
                       <Input
+                        fullWidth
                         value={name}
                         onChange={(event) => setName(event.target.value)}
-                        placeholder={t('wizardNamePh')}
                         aria-label={t('accountName')}
                         disabled={settingsLocked}
                         autoFocus
                       />
-                    </FormRow>
+                    </div>
                     <button
                       type="button"
                       onClick={() => setAdvancedOpen((open) => !open)}
@@ -616,54 +622,61 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                       {t('wizardAdvanced')}
                     </button>
                     {advancedOpen ? (
-                      <div className="space-y-3 rounded-lg bg-surface-secondary px-3.5 py-3.5">
-                        <FormRow label={t('maxInflight')} hint={t('maxInflightHint')}>
-                          <NumberField
-                            value={maxInFlight}
-                            onChange={(value) => setMaxInFlight(value ?? 4)}
-                            minValue={1}
-                            maxValue={32}
-                            isDisabled={settingsLocked}
-                            isRequired
-                          >
-                            <NumberField.Group>
-                              <NumberField.DecrementButton />
-                              <NumberField.Input aria-label={t('maxInflight')} />
-                              <NumberField.IncrementButton />
-                            </NumberField.Group>
-                          </NumberField>
-                        </FormRow>
-                        <FormRow label={t('priority')} hint={t('priorityHint')}>
-                          <NumberField
-                            value={priority}
-                            onChange={(value) => setPriority(value ?? 50)}
-                            minValue={1}
-                            maxValue={100}
-                            isDisabled={settingsLocked}
-                            isRequired
-                          >
-                            <NumberField.Group>
-                              <NumberField.DecrementButton />
-                              <NumberField.Input aria-label={t('priority')} />
-                              <NumberField.IncrementButton />
-                            </NumberField.Group>
-                          </NumberField>
-                        </FormRow>
-                        <FormRow label={t('proxyUrl')} hint={t('proxyUrlHint')}>
+                      <div className="card gap-3 rounded-xl bg-surface px-3.5 py-3.5">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div className="space-y-1.5">
+                            <Label className="text-body font-medium text-muted">{t('maxInflight')}</Label>
+                            <NumberField
+                              value={maxInFlight}
+                              onChange={(value) => setMaxInFlight(value ?? 4)}
+                              minValue={1}
+                              maxValue={32}
+                              isDisabled={settingsLocked}
+                              isRequired
+                            >
+                              <NumberField.Group className="w-full">
+                                <NumberField.DecrementButton />
+                                <NumberField.Input aria-label={t('maxInflight')} />
+                                <NumberField.IncrementButton />
+                              </NumberField.Group>
+                            </NumberField>
+                            <Description className="text-caption leading-5 text-muted">{t('maxInflightHint')}</Description>
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-body font-medium text-muted">{t('priority')}</Label>
+                            <NumberField
+                              value={priority}
+                              onChange={(value) => setPriority(value ?? 50)}
+                              minValue={1}
+                              maxValue={100}
+                              isDisabled={settingsLocked}
+                              isRequired
+                            >
+                              <NumberField.Group className="w-full">
+                                <NumberField.DecrementButton />
+                                <NumberField.Input aria-label={t('priority')} />
+                                <NumberField.IncrementButton />
+                              </NumberField.Group>
+                            </NumberField>
+                            <Description className="text-caption leading-5 text-muted">{t('priorityHint')}</Description>
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <Label className="text-body font-medium text-muted">{t('proxyUrl')}</Label>
                           <Input
+                            fullWidth
                             value={proxyUrl}
                             onChange={(event) => setProxyUrl(event.target.value)}
                             placeholder={t('proxyUrlPlaceholder')}
                             aria-label={t('proxyUrl')}
                             disabled={settingsLocked}
                           />
-                        </FormRow>
+                          <Description className="text-caption leading-5 text-muted">{t('proxyUrlHint')}</Description>
+                        </div>
                         {showDropSystem ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-body font-medium text-muted">{t('dropSystemPrompt')}</div>
-                              <p className="mt-0.5 text-caption leading-5 text-muted">{t(activeOption?.provider === 'trae' ? 'dropSystemPromptTraeHint' : 'dropSystemPromptCreateHint')}</p>
-                            </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label className="text-body font-medium text-muted">{t('dropSystemPrompt')}</Label>
+                            <Description className="text-caption leading-5 text-muted">{t(activeOption?.provider === 'trae' ? 'dropSystemPromptTraeHint' : 'dropSystemPromptCreateHint')}</Description>
                             <CompactSwitch
                               isSelected={dropSystemPrompt}
                               isDisabled={settingsLocked}
@@ -707,9 +720,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                       {message ? (
                         <p className="flex items-center gap-2 rounded-lg bg-surface-secondary px-3 py-2 text-caption">{isDone ? <CheckCircle size={14} className="shrink-0 text-success" /> : null}<span className={isDone ? 'font-medium text-foreground' : 'text-muted'}>{message}</span></p>
                       ) : null}
-                      <Button className="w-full" isPending={phase === 'busy'} onPress={() => void runZhipu()} isDisabled={isDone}>
-                        {isDone ? <><CheckCircle size={15} />{t('wizardAccountReady')}</> : <><Key size={15} />{t('zhipuCreate')}</>}
-                      </Button>
                     </div>
                   ) : null}
 
@@ -730,7 +740,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                     options={methodOptions.map((option) => ({
                       id: option.value,
                       label: option.label,
-                      icon: option.icon,
                     }))}
                   />
 
@@ -752,7 +761,7 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                           />
                         ) : null}
                         {authUrl ? (
-                          <div className="rounded-lg bg-surface-secondary px-3 py-2.5">
+                          <div className="card rounded-xl bg-surface px-3 py-2.5">
                             <div className="flex items-center gap-2 text-caption">
                               <StatusIcon phase={phase} busy={busy} tab={tab} forTab="browser" />
                               <span className="text-muted">{message || t('loginOpenMsg')}</span>
@@ -793,14 +802,11 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                               aria-label={t('wizardCallbackPh')}
                               disabled={isDone}
                             />
-                            <Button className="w-full" variant="secondary" isPending={phase === 'busy' && Boolean(callbackUrl.trim())} onPress={() => void runCallback()} isDisabled={isDone}>
+                            <Button size="sm" variant="secondary" isPending={phase === 'busy' && Boolean(callbackUrl.trim())} onPress={() => void runCallback()} isDisabled={isDone}>
                               {t('wizardSubmitCallback')}
                             </Button>
                           </div>
                         ) : null}
-                        <Button className="w-full" isPending={tabPending('browser')} onPress={() => void runBrowser()}>
-                          {isDone ? <><CheckCircle size={15} />{t('wizardAccountReady')}</> : <><ShieldCheck size={15} />{t('wizardStartBrowser')}</>}
-                        </Button>
                       </>
                     ) : tab === 'pat' ? (
                       <>
@@ -810,9 +816,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                         {message ? (
                           <p className="flex items-center gap-2 rounded-lg bg-surface-secondary px-3 py-2 text-caption">{isDone ? <CheckCircle size={14} className="shrink-0 text-success" /> : null}<span className={isDone ? 'font-medium text-foreground' : 'text-muted'}>{message}</span></p>
                         ) : null}
-                        <Button className="w-full" isPending={tabPending('pat')} onPress={() => void runPat()}>
-                          {isDone ? <><CheckCircle size={15} />{t('patDone')}</> : <><Key size={15} />{t('wizardCreateAndLogin')}</>}
-                        </Button>
                       </>
                     ) : (
                       <>
@@ -825,9 +828,6 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
                         {message ? (
                           <p className="flex items-center gap-2 rounded-lg bg-surface-secondary px-3 py-2 text-caption">{isDone ? <CheckCircle size={14} className="shrink-0 text-success" /> : null}<span className={isDone ? 'font-medium text-foreground' : 'text-muted'}>{message}</span></p>
                         ) : null}
-                        <Button className="w-full" isPending={tabPending('import')} onPress={() => void runImport()}>
-                          {isDone ? <><CheckCircle size={15} />{t('accountImported')}</> : <><FileCode size={15} />{t('importCredential')}</>}
-                        </Button>
                       </>
                     )}
                   </div>
@@ -837,8 +837,28 @@ export function AddAccountModal({ isOpen, onClose, onAdded }: Props) {
               )}
               </div>
             </Modal.Body>
-            <Modal.Footer className="justify-end px-5 pb-5">
+            <Modal.Footer className="justify-end gap-2 px-5 pb-5">
               <Button variant="ghost" onPress={close} isDisabled={busy}>{t('cancel')}</Button>
+              {step === 'login' && isZhipu ? (
+                <Button isPending={phase === 'busy'} onPress={() => void runZhipu()} isDisabled={isDone}>
+                  {isDone ? <><CheckCircle size={15} />{t('wizardAccountReady')}</> : <><Key size={15} />{t('zhipuCreate')}</>}
+                </Button>
+              ) : null}
+              {step === 'login' && !isZhipu && tab === 'browser' ? (
+                <Button isPending={tabPending('browser')} onPress={() => void runBrowser()} isDisabled={isDone}>
+                  {isDone ? <><CheckCircle size={15} />{t('wizardAccountReady')}</> : <><ShieldCheck size={15} />{t('wizardStartBrowser')}</>}
+                </Button>
+              ) : null}
+              {step === 'login' && !isZhipu && tab === 'pat' ? (
+                <Button isPending={tabPending('pat')} onPress={() => void runPat()} isDisabled={isDone}>
+                  {isDone ? <><CheckCircle size={15} />{t('patDone')}</> : <><Key size={15} />{t('wizardCreateAndLogin')}</>}
+                </Button>
+              ) : null}
+              {step === 'login' && !isZhipu && tab === 'import' ? (
+                <Button isPending={tabPending('import')} onPress={() => void runImport()} isDisabled={isDone}>
+                  {isDone ? <><CheckCircle size={15} />{t('accountImported')}</> : <><FileCode size={15} />{t('importCredential')}</>}
+                </Button>
+              ) : null}
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>
