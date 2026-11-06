@@ -110,14 +110,19 @@ func ClassifyError(err error) Classified {
 	if isTransportFailure(err) {
 		// The request never reached the upstream: a dial, TLS handshake, or
 		// reset failure says nothing about this account's credential, quota,
-		// or rate limit. Cooling it with the generic unavailable default (15s)
-		// just parks a healthy account, and in a single-account route one
-		// handshake timeout turns into "all accounts are cooling down" for
-		// every request that follows. Surface the transport failure and let
-		// the client retry; the account stays routable.
+		// or rate limit, so the account is never cooled — the generic
+		// unavailable default (15s) would park a healthy account, and in a
+		// single-account route one handshake timeout would leave "all
+		// accounts are cooling down" for every request that follows. Fail
+		// over with zero cooldown instead of handing the 502 to the client:
+		// on a multi-account route the next account usually survives the
+		// same network blip, and on a single-account route the failover hop
+		// finds no other candidate, so the original transport error stays
+		// the final answer either way.
 		return Classified{
 			Kind: accounts.KindUnavailable, Status: http.StatusBadGateway,
-			Failover: false, Code: "upstream_unreachable", Type: "api_error",
+			Failover: true, Cooldown: 0, RetryAfter: 0,
+			Code: "upstream_unreachable", Type: "api_error",
 			Message: err.Error(),
 		}
 	}

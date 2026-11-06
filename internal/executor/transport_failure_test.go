@@ -28,8 +28,8 @@ func TestClassifyErrorTransportFailureKeepsAccountRoutable(t *testing.T) {
 	if c.Kind != accounts.KindUnavailable || c.Status != 502 || c.Code != "upstream_unreachable" {
 		t.Fatalf("transport classified=%+v", c)
 	}
-	if c.Cooldown != 0 || c.RetryAfter != 0 || c.Failover {
-		t.Fatalf("transport failure must not cool or fail over: %+v", c)
+	if c.Cooldown != 0 || c.RetryAfter != 0 || !c.Failover {
+		t.Fatalf("transport failure must not cool but must fail over: %+v", c)
 	}
 	if !strings.Contains(c.Message, "TLS handshake timeout") {
 		t.Fatalf("message must keep the transport cause: %q", c.Message)
@@ -79,7 +79,7 @@ func TestClassifyErrorUpstreamQuotedHandshakeTimeoutStillCools(t *testing.T) {
 func TestClassifyErrorWrappedTransportFailure(t *testing.T) {
 	wrapped := fmt.Errorf("qoder chat: %w", qoderHandshakeTimeout())
 	c := ClassifyError(wrapped)
-	if c.Cooldown != 0 || c.Failover || c.Code != "upstream_unreachable" {
+	if c.Cooldown != 0 || !c.Failover || c.Code != "upstream_unreachable" {
 		t.Fatalf("wrapped transport classified=%+v", c)
 	}
 }
