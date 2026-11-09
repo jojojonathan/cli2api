@@ -68,6 +68,7 @@ type directPrepared struct {
 	request *http.Request
 	model   string
 	level   string
+	allowed map[string]struct{}
 }
 
 func (d *Direct) prepare(ctx context.Context, accountID string, req translate.ChatRequest) (directPrepared, error) {
@@ -179,10 +180,26 @@ func (d *Direct) prepare(ctx context.Context, accountID string, req translate.Ch
 		httpReq.Header.Set("X-Model-Key", modelKey)
 		httpReq.Header.Set("X-Model-Source", "system")
 	}
-	return directPrepared{request: httpReq, model: modelKey, level: resolvedReasoningLevel(req)}, nil
+	return directPrepared{allowed: allowedToolNames(req.Tools), request: httpReq, model: modelKey, level: resolvedReasoningLevel(req)}, nil
 }
 
 func (d *Direct) ChatNonStream(ctx context.Context, accountID string, req translate.ChatRequest) (providers.ChatOutcome, error) {
+	var last error
+	for attempt := 0; attempt < 2; attempt++ {
+		outcome, err := d.chatNonStreamOnce(ctx, accountID, req)
+		if err == nil {
+			return outcome, nil
+		}
+		last = err
+		if !isImageConversionTimeoutErr(err) || attempt == 1 {
+			return providers.ChatOutcome{}, err
+		}
+		// hub cdd95ef: one same-account bounded retry; no rotation/cooldown.
+	}
+	return providers.ChatOutcome{}, last
+}
+
+func (d *Direct) chatNonStreamOnce(ctx context.Context, accountID string, req translate.ChatRequest) (providers.ChatOutcome, error) {
 	prepared, err := d.prepare(ctx, accountID, req)
 	if err != nil {
 		return providers.ChatOutcome{}, err
@@ -192,7 +209,12 @@ func (d *Direct) ChatNonStream(ctx context.Context, accountID string, req transl
 		return providers.ChatOutcome{}, err
 	}
 	defer release()
-	resp, err := d.http.Do(prepared.request)
+	// The upstream always answers as SSE even for buffered callers, so the
+	// response head arrives fast in the healthy case. Without this deadline a
+	// black-holed gateway connection (accepted, never answered, no FIN/RST)
+	// hangs until the kernel TCP retransmission timeout (~170s observed) and
+	// the executor never gets a chance to fail over.
+	resp, err := doWithFirstByteTimeout(d.http, prepared.request, d.ttfb)
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
@@ -204,7 +226,7 @@ func (d *Direct) ChatNonStream(ctx context.Context, accountID string, req transl
 	if resp.StatusCode >= 300 {
 		return providers.ChatOutcome{}, upstreamStatusError(resp.StatusCode, raw)
 	}
-	outcome, err := outcomeFromUpstreamSSE(prepared.model, raw)
+	outcome, err := outcomeFromUpstreamSSE(prepared.model, raw, prepared.allowed)
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
@@ -213,6 +235,21 @@ func (d *Direct) ChatNonStream(ctx context.Context, accountID string, req transl
 }
 
 func (d *Direct) ChatStream(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
+	var last error
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, resolved, err := d.chatStreamOnce(ctx, accountID, req)
+		if err == nil {
+			return resp, resolved, nil
+		}
+		last = err
+		if !isImageConversionTimeoutErr(err) || attempt == 1 {
+			return nil, providers.ResolvedChat{}, err
+		}
+	}
+	return nil, providers.ResolvedChat{}, last
+}
+
+func (d *Direct) chatStreamOnce(ctx context.Context, accountID string, req translate.ChatRequest) (*http.Response, providers.ResolvedChat, error) {
 	prepared, err := d.prepare(ctx, accountID, req)
 	if err != nil {
 		return nil, providers.ResolvedChat{}, err
@@ -240,7 +277,12 @@ func (d *Direct) ChatStream(ctx context.Context, accountID string, req translate
 		release()
 		return nil, providers.ResolvedChat{}, err
 	}
-	return rewriteUpstreamSSE(guarded, prepared.model), providers.ResolvedChat{ReasoningLevel: prepared.level}, nil
+	if detail := peekUpstreamErrorDetail(guarded); isImageConversionTimeoutMessage(detail) {
+		_ = guarded.Body.Close()
+		release()
+		return nil, providers.ResolvedChat{}, imageConversionTimeoutError(detail)
+	}
+	return rewriteUpstreamSSE(guarded, prepared.model, prepared.allowed), providers.ResolvedChat{ReasoningLevel: prepared.level}, nil
 }
 
 // defaultQueueRetryAfter is used when a 10605 queue rejection carries no
@@ -274,6 +316,9 @@ func upstreamStatusError(status int, body []byte) error {
 			Kind: accounts.KindUnavailable, Status: http.StatusBadGateway,
 			Code: providers.CodeClientVersionTooLow, Message: clientVersionTooLowMessage,
 		}
+	}
+	if isImageConversionTimeoutMessage(message) {
+		return imageConversionTimeoutError(message)
 	}
 	kind := accounts.KindUnavailable
 	switch status {
@@ -427,6 +472,9 @@ func BuildPlainChatBody(req translate.ChatRequest, now time.Time) map[string]any
 			continue
 		}
 		item := map[string]any{"role": message.Role, "content": normalizeMessageContent(message)}
+		if parts := upstreamContents(message.Role, message.Content); parts != nil {
+			item["contents"] = parts
+		}
 		if message.Name != "" {
 			item["name"] = message.Name
 		}
@@ -446,8 +494,13 @@ func BuildPlainChatBody(req translate.ChatRequest, now time.Time) map[string]any
 		messages = append([]map[string]any{{"role": "system", "content": systemText}}, messages...)
 	}
 	if len(messages) == 0 {
-		messages = []map[string]any{{"role": "user", "content": "ping"}}
+		messages = []map[string]any{{
+			"role":     "user",
+			"content":  "ping",
+			"contents": upstreamContents("user", "ping"),
+		}}
 	}
+	ensureCacheMarker(messages)
 	modelKey := strings.TrimSpace(req.Model)
 	if modelKey == "" {
 		modelKey = "auto"
@@ -574,6 +627,109 @@ func normalizeMessageContent(message translate.ChatMessage) any {
 	return message.Content
 }
 
+// upstreamContents mirrors a message's content into the `contents` part array
+// the official client sends alongside `content`. Prompt-cache markers ride on
+// these parts, so a message without a contents array can never carry one.
+// Shape follows the reference converter: text-ish parts become {type,text},
+// image parts become {type,image_url}, anything else is dropped.
+func upstreamContents(role string, content any) []any {
+	if role == "tool" {
+		return nil
+	}
+	switch value := content.(type) {
+	case string:
+		if value == "" {
+			return nil
+		}
+		return []any{map[string]any{"type": "text", "text": value}}
+	case []any:
+		parts := make([]any, 0, len(value))
+		for _, raw := range value {
+			if part, ok := upstreamContentPart(raw); ok {
+				parts = append(parts, part)
+			}
+		}
+		if len(parts) == 0 {
+			return nil
+		}
+		return parts
+	}
+	return nil
+}
+
+func upstreamContentPart(raw any) (map[string]any, bool) {
+	switch part := raw.(type) {
+	case string:
+		return map[string]any{"type": "text", "text": part}, true
+	case map[string]any:
+		switch partType, _ := part["type"].(string); partType {
+		case "text", "input_text", "output_text":
+			text, _ := part["text"].(string)
+			if text == "" {
+				text, _ = part["content"].(string)
+			}
+			return map[string]any{"type": "text", "text": text}, true
+		case "image_url":
+			switch image := part["image_url"].(type) {
+			case string:
+				if image == "" {
+					return nil, false
+				}
+				return map[string]any{"type": "image_url", "image_url": map[string]any{"url": image}}, true
+			case map[string]any:
+				if url, _ := image["url"].(string); url != "" {
+					return map[string]any{"type": "image_url", "image_url": image}, true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+// ensureCacheMarker applies the official client's prompt-cache contract: the
+// request carries exactly one ephemeral cache_control marker, on the last
+// cacheable part of the last non-tool message. The gateway discounts prefix
+// tokens only when the request carries the marker — without one the CN
+// gateway bills the whole context at uncached rates on every call, even when
+// the prefix repeats turn over turn.
+func ensureCacheMarker(messages []map[string]any) {
+	for _, message := range messages {
+		for _, part := range contentParts(message) {
+			if _, marked := part["cache_control"]; marked {
+				return
+			}
+		}
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if role, _ := message["role"].(string); role == "tool" {
+			continue
+		}
+		parts := contentParts(message)
+		for j := len(parts) - 1; j >= 0; j-- {
+			switch partType, _ := parts[j]["type"].(string); partType {
+			case "text", "image_url":
+				parts[j]["cache_control"] = map[string]any{"type": "ephemeral"}
+				return
+			}
+		}
+	}
+}
+
+func contentParts(message map[string]any) []map[string]any {
+	raw, ok := message["contents"].([]any)
+	if !ok {
+		return nil
+	}
+	parts := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if part, ok := item.(map[string]any); ok {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
 func rawNumber(raw json.RawMessage) (int, bool) {
 	if len(raw) == 0 {
 		return 0, false
@@ -618,12 +774,15 @@ type upstreamFrame struct {
 	errKind   string
 }
 
-func outcomeFromUpstreamSSE(model string, raw []byte) (providers.ChatOutcome, error) {
-	frame, err := collectUpstream(bytes.NewReader(raw))
+func outcomeFromUpstreamSSE(model string, raw []byte, names ...map[string]struct{}) (providers.ChatOutcome, error) {
+	frame, err := collectUpstream(bytes.NewReader(raw), names...)
 	if err != nil {
 		return providers.ChatOutcome{}, err
 	}
 	if frame.errText != "" && frame.content == "" && frame.reasoning == "" && len(frame.tools) == 0 {
+		if isImageConversionTimeoutMessage(frame.errText) {
+			return providers.ChatOutcome{}, imageConversionTimeoutError(frame.errText)
+		}
 		kind := frame.errKind
 		if kind == "" {
 			kind = accounts.KindUnavailable
@@ -694,7 +853,11 @@ func applyUsage(out *providers.ChatOutcome, raw json.RawMessage) {
 	out.Credits = usage.Credits
 }
 
-func collectUpstream(r io.Reader) (upstreamFrame, error) {
+func collectUpstream(r io.Reader, names ...map[string]struct{}) (upstreamFrame, error) {
+	var allowed map[string]struct{}
+	if len(names) > 0 {
+		allowed = names[0]
+	}
 	var frame upstreamFrame
 	var content, reasoning strings.Builder
 	var acc toolCallAccumulator
@@ -742,6 +905,18 @@ func collectUpstream(r io.Reader) (upstreamFrame, error) {
 	frame.content = content.String()
 	frame.reasoning = reasoning.String()
 	frame.tools = acc.encode()
+	if len(frame.tools) == 0 && frame.content != "" {
+		if clean, tools, ok := recoverToolTagsFromContent(frame.content, nil, allowed); ok {
+			frame.content = clean
+			frame.tools = tools
+			if frame.finish == "" || frame.finish == "stop" {
+				frame.finish = "tool_calls"
+			}
+		}
+	}
+	if len(frame.tools) > 0 {
+		frame.tools = repairToolCallArgumentsJSON(frame.tools)
+	}
 	return frame, err
 }
 
@@ -808,7 +983,7 @@ func (a *toolCallAccumulator) encode() json.RawMessage {
 		out = append(out, a.calls[index])
 	}
 	raw, _ := json.Marshal(out)
-	return raw
+	return repairToolCallArgumentsJSON(raw)
 }
 
 func upstreamError(body map[string]any) (string, int, string) {
@@ -879,14 +1054,64 @@ func walkUpstream(r io.Reader, fn func(map[string]any) error) error {
 	return scanner.Err()
 }
 
-func rewriteUpstreamSSE(resp *http.Response, model string) *http.Response {
+// peekUpstreamErrorDetail inspects the already-peeked SSE head for an
+// error-only envelope (used to catch image conversion timeouts before any
+// client bytes are written so Direct can retry the same account once).
+func peekUpstreamErrorDetail(resp *http.Response) string {
+	if resp == nil || resp.Body == nil {
+		return ""
+	}
+	br := bufio.NewReader(resp.Body)
+	var pending bytes.Buffer
+	for {
+		line, err := br.ReadString('\n')
+		if line != "" {
+			pending.WriteString(line)
+			trimmed := strings.TrimSpace(line)
+			if data, ok := strings.CutPrefix(trimmed, "data:"); ok {
+				payload := strings.TrimSpace(data)
+				if meaningfulDataLine(payload) {
+					var outer map[string]any
+					if json.Unmarshal([]byte(payload), &outer) == nil {
+						body := outer
+						if nested, ok := outer["body"]; ok {
+							switch typed := nested.(type) {
+							case string:
+								var inner map[string]any
+								if json.Unmarshal([]byte(typed), &inner) == nil {
+									body = inner
+								}
+							case map[string]any:
+								body = typed
+							}
+						}
+						frame := frameFromBody(body)
+						resp.Body = peekedBody{Reader: io.MultiReader(&pending, br), Closer: resp.Body}
+						if frame.errText != "" && frame.content == "" && frame.reasoning == "" && len(frame.tools) == 0 {
+							return frame.errText
+						}
+						return ""
+					}
+					resp.Body = peekedBody{Reader: io.MultiReader(&pending, br), Closer: resp.Body}
+					return ""
+				}
+			}
+		}
+		if err != nil {
+			resp.Body = peekedBody{Reader: io.MultiReader(&pending, br), Closer: resp.Body}
+			return ""
+		}
+	}
+}
+
+func rewriteUpstreamSSE(resp *http.Response, model string, names ...map[string]struct{}) *http.Response {
 	pr, pw := io.Pipe()
 	// Both the converter goroutine and the caller may close upstream; Once
 	// keeps non-idempotent wrappers (cancelOnCloseBody) race-free.
 	closeUpstream := sync.OnceValue(resp.Body.Close)
 	go func() {
 		defer closeUpstream()
-		err := writeOpenAIChunks(pw, resp.Body, model)
+		err := writeOpenAIChunks(pw, recoverToolTagStream(resp.Body, names...), model)
 		_ = pw.CloseWithError(err)
 	}()
 	headers := resp.Header.Clone()
