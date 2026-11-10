@@ -240,7 +240,7 @@ func TestModelsAdvertiseImageSupport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case modelBuiltinPath:
-			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"vision-model","supports_images":true,"context_window":1000,"max_tokens":100},{"model_id":"text-model","supports_images":false,"context_window":1000,"max_tokens":100},{"model_id":"kimi-k3.1-pro","supports_images":false,"context_window":1048576,"max_tokens":16384}]}`)
+			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"vision-model","supports_images":true,"context_window":1000,"max_tokens":100},{"model_id":"text-model","supports_images":false,"context_window":1000,"max_tokens":100}]}`)
 		case agentListPath, agentDetailPath:
 			http.NotFound(w, r)
 		case benefitClaim:
@@ -266,11 +266,6 @@ func TestModelsAdvertiseImageSupport(t *testing.T) {
 	}
 	if byID["text-model"].Capabilities.Images {
 		t.Fatalf("text model images = %+v", byID["text-model"].Capabilities)
-	}
-	// The catalog leaves kimi-k3.1-pro unmarked, but the measured override
-	// must still advertise image support.
-	if !byID["kimi-k3.1-pro"].Capabilities.Images {
-		t.Fatalf("kimi-k3.1-pro images = %+v", byID["kimi-k3.1-pro"].Capabilities)
 	}
 }
 

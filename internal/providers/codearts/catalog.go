@@ -203,25 +203,9 @@ func mergeRecords(target map[string]modelRecord, records []modelRecord) {
 	}
 }
 
-// upstreamVisionOverrides marks models the upstream catalog leaves
-// supports_images=false but live measurement proved image input works. Keys
-// are lowered model ids. Measured 2026-11-09 on a cn-north-4 account:
-// kimi-k3.1-pro answered the dominant-color probe correctly for red and blue
-// 64x64 PNGs (200 + stop on both), so the declaration is stale, not a hard
-// gateway limit. Mirrors the Trae visionCapableModels table.
-var upstreamVisionOverrides = map[string]struct{}{
-	"kimi-k3.1-pro": {},
-}
-
-func upstreamVisionOverride(id string) bool {
-	_, ok := upstreamVisionOverrides[strings.ToLower(strings.TrimSpace(id))]
-	return ok
-}
-
-// toModelInfo declares what the upstream catalog publishes, plus the measured
-// vision overrides above. Tools are a provider-level capability (the chat
-// endpoint accepts them natively); images and reasoning levels are forwarded
-// only when the catalog advertises them.
+// toModelInfo declares only what the upstream catalog publishes. Tools are a
+// provider-level capability (the chat endpoint accepts them natively); images
+// and reasoning levels are forwarded only when the catalog advertises them.
 func toModelInfo(record modelRecord) providers.ModelInfo {
 	maxOutput := record.MaxTokens
 	if maxOutput > 65536 {
@@ -235,7 +219,7 @@ func toModelInfo(record modelRecord) providers.ModelInfo {
 		MaxOutput:        int(maxOutput),
 		Tools:            true,
 		Reasoning:        true,
-		Images:           record.Images || upstreamVisionOverride(record.ID),
+		Images:           record.Images,
 	}
 	if options := normalizeReasoningOptions(record.Reasoning); len(options) > 0 {
 		caps.ReasoningOptions = options
