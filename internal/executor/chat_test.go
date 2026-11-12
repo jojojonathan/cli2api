@@ -455,6 +455,147 @@ func TestChatStreamProxyDoesNotUseClientTotalTimeout(t *testing.T) {
 	}
 }
 
+// An upstream can answer 200 and close the body before the first SSE event.
+// Nothing has reached the client yet at that point, so the executor must cool
+// the account down and retry the request on the next one instead of relaying
+// an empty stream as a success.
+func TestChatStreamProxyFailsOverEmptyFirstStream(t *testing.T) {
+	var aHits, bHits atomic.Int32
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		aHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer b.Close()
+
+	pool := NewPool([]string{a.URL, b.URL}, []string{"a", "b"})
+	ex := NewChatExecutor(pool, "")
+	ex.HTTPClient = a.Client()
+
+	stream, err := ex.ChatStreamProxy(context.Background(), translate.ChatRequest{
+		Model:    "minimax-m3",
+		Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Response.Body.Close()
+	if stream.AccountID != "b" || aHits.Load() != 1 || bHits.Load() != 1 {
+		t.Fatalf("account=%q aHits=%d bHits=%d", stream.AccountID, aHits.Load(), bHits.Load())
+	}
+	body, err := io.ReadAll(stream.Response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"content":"hi"`) || !strings.Contains(string(body), "[DONE]") {
+		t.Fatalf("probe must replay every byte of the retried stream, body=%q", body)
+	}
+	item, _ := pool.ByID("a")
+	if item.DownUntil.IsZero() {
+		t.Fatalf("empty-stream account must be cooled: %+v", item)
+	}
+}
+
+// The worker turns an upstream failure before the first token into a structured
+// SSE error event. That event arrives before anything reaches the client, so it
+// must trigger a retry on another account instead of ending the stream.
+func TestChatStreamProxyFailsOverStructuredErrorFirstEvent(t *testing.T) {
+	var bHits atomic.Int32
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "event: error\ndata: {\"error\":{\"message\":\"upstream_stream_interrupted: socket closed\",\"type\":\"api_error\",\"code\":\"upstream_stream_interrupted\",\"kind\":\"unavailable\",\"status\":502,\"failover\":true}}\n\n")
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer b.Close()
+
+	pool := NewPool([]string{a.URL, b.URL}, []string{"a", "b"})
+	ex := NewChatExecutor(pool, "")
+	ex.HTTPClient = a.Client()
+
+	stream, err := ex.ChatStreamProxy(context.Background(), translate.ChatRequest{
+		Model:    "minimax-m3",
+		Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Response.Body.Close()
+	if stream.AccountID != "b" || bHits.Load() != 1 {
+		t.Fatalf("account=%q bHits=%d", stream.AccountID, bHits.Load())
+	}
+	body, err := io.ReadAll(stream.Response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "recovered") {
+		t.Fatalf("body=%q", body)
+	}
+}
+
+// A client that disconnects while the probe is still waiting for the first
+// event must be reported as a cancellation. Recording it as a success would
+// mark the account healthy and invite the next request onto the same stream.
+func TestChatStreamProxyProbeCancelDoesNotMarkAccountHealthy(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	pool := NewPool([]string{srv.URL}, []string{"a"})
+	ex := NewChatExecutor(pool, "")
+	ex.HTTPClient = srv.Client()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		// Headers are out, so the executor is blocked inside the probe.
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+		close(release)
+	}()
+	stream, err := ex.ChatStreamProxy(ctx, translate.ChatRequest{
+		Model:    "minimax-m3",
+		Messages: []translate.ChatMessage{{Role: "user", Content: "hi"}},
+	}, "a", "")
+	if err != nil {
+		t.Fatalf("probe must hand a canceled request back to the relay, err=%v", err)
+	}
+	defer stream.Response.Body.Close()
+	// The body ends because the request was canceled. The transport may report
+	// that as the context error or as a closed connection; either way it must
+	// not come back as a completed stream.
+	if _, err := io.ReadAll(stream.Response.Body); err == nil {
+		t.Fatal("canceled probe returned a completed stream")
+	}
+	item, _ := pool.ByID("a")
+	if !item.DownUntil.IsZero() || item.LastKind != "" {
+		t.Fatalf("cancellation must not cool or relabel the account: %+v", item)
+	}
+}
+
 // A provider can answer 200 and then fail inside the SSE body. The executor's
 // attempt loop already returned, so this is the only hook that can mark the
 // account down for the next request.

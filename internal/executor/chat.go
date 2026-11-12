@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -140,10 +141,14 @@ func regionFilterFromContext(ctx context.Context) string {
 }
 
 func requestContextDone(ctx context.Context, err error) bool {
-	if err == nil {
+	if ctx == nil || ctx.Err() == nil || err == nil {
 		return false
 	}
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil)
+	// The caller's request has to be finished, and the error has to be that
+	// context's own sentinel. errors.Is would also match an upstream that
+	// wrapped context.Canceled into its own failure; that is an upstream
+	// problem and must still fail over.
+	return err == context.Canceled || err == context.DeadlineExceeded || errors.Is(err, ctx.Err())
 }
 
 const (
@@ -466,7 +471,8 @@ func coolingPickError(item Item, publicModel string, retryAfter time.Duration) e
 		kind = accounts.KindQuota
 		code = "insufficient_quota"
 		typ = "insufficient_quota"
-		failover = false
+		// The pool is already out of accounts, so this response is terminal
+		// even though a single account's quota error would fail over.
 		if strings.TrimSpace(publicModel) != "" {
 			message = fmt.Sprintf("all accounts that can serve %s are on quota cooldown", publicModel)
 		} else {
@@ -573,18 +579,109 @@ func (e ChatExecutor) ObserveStreamFailure(accountID string, err error, model st
 		e.handleModelAvailabilityFailure("", "stream_body", accountID, model, classified)
 		return
 	}
-	if classified.Kind == accounts.KindQuota {
-		// Quota is classified with Failover=false because the account is not
-		// at fault on a normal request path. Here the response already went
-		// out with 200, so there is no other account to fail over to; without
-		// an explicit cooldown the next request would pick this account again
-		// and fail the same way. Force the cooldown.
-		classified.Failover = true
-		if classified.Cooldown <= 0 {
-			classified.Cooldown = NextLocalMidnightCooldown()
-		}
+	if classified.Kind == accounts.KindQuota && classified.Cooldown <= 0 {
+		// The response already went out with 200, so there is no other account
+		// to fail over to. Still cool this one down, or the next request picks
+		// it again and fails the same way.
+		classified.Cooldown = NextLocalMidnightCooldown()
 	}
 	e.markClassified(accountID, classified, model)
+}
+
+// errEmptyStream means the upstream answered 200 and then closed the body
+// before sending a single SSE line. Historically quota-exhausted accounts did
+// this and the executor recorded it as a success.
+var errEmptyStream = errors.New("upstream answered 200 but the stream was empty before the first event")
+
+// replayReadCloser replays the bytes consumed by the probe and then continues
+// reading from the live upstream body.
+type replayReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// probeStreamBody waits for the first event of an upstream stream. Nothing has
+// been sent to the client yet at this point, so a stream that dies or reports
+// an error before the first event can still fail over to another account.
+// Blank lines and comments (: keep-alive) are skipped; the bytes read while
+// probing are replayed so the relay sees the stream from the first byte.
+// The returned Classified is only meaningful when err != nil. A read that
+// fails because the caller's request was canceled returns that context error,
+// so the caller can report KindCanceled instead of treating the account as
+// healthy. A body that merely wraps a context error while the request is still
+// alive is an upstream failure and fails over.
+func probeStreamBody(ctx context.Context, body io.ReadCloser) (io.ReadCloser, Classified, error) {
+	if body == nil {
+		return nil, Classify(0, errEmptyStream.Error(), "", accounts.KindUnavailable, ""), errEmptyStream
+	}
+	reader := bufio.NewReaderSize(body, 64*1024)
+	var consumed bytes.Buffer
+	eventName := ""
+	for {
+		line, err := reader.ReadString('\n')
+		if line != "" {
+			consumed.WriteString(line)
+			text := strings.TrimSpace(strings.TrimRight(line, "\r\n"))
+			switch {
+			case text == "", strings.HasPrefix(text, ":"):
+				// Frame separator or keep-alive comment: keep waiting.
+			case strings.HasPrefix(text, "event:"):
+				eventName = strings.TrimSpace(strings.TrimPrefix(text, "event:"))
+			case strings.HasPrefix(text, "data:"):
+				data := strings.TrimSpace(strings.TrimPrefix(text, "data:"))
+				if classified, failed := probeFrameFailure(eventName, data); failed {
+					body.Close()
+					return nil, classified, fmt.Errorf("upstream stream failed before the first event: %s", classified.Message)
+				}
+				return &replayReadCloser{Reader: io.MultiReader(&consumed, reader), Closer: body}, Classified{}, nil
+			default:
+				// Non-SSE payload: let the relay surface it unchanged.
+				return &replayReadCloser{Reader: io.MultiReader(&consumed, reader), Closer: body}, Classified{}, nil
+			}
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				// A context error is not an account failure. Hand back what was
+				// already read and let the relay decide: a canceled request is
+				// reported as a cancellation, and a body that wrapped
+				// context.Canceled while the request is still alive replays
+				// through the relay, which fails over without a pre-stream 502.
+				return &replayReadCloser{Reader: io.MultiReader(&consumed, reader), Closer: body}, Classified{}, nil
+			}
+			body.Close()
+			if errors.Is(err, io.EOF) {
+				return nil, Classify(0, errEmptyStream.Error(), "", accounts.KindUnavailable, ""), errEmptyStream
+			}
+			return nil, Classify(0, err.Error(), "", accounts.KindUnavailable, ""), err
+		}
+	}
+}
+
+// probeFrameFailure recognizes an SSE error frame, such as the structured
+// "event: error" the worker emits when the upstream dies before streaming any
+// token. Content frames (the ones carrying choices) are not failures.
+func probeFrameFailure(eventName, data string) (Classified, bool) {
+	if data == "" {
+		return Classified{}, false
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(data), &payload) != nil {
+		return Classified{}, false
+	}
+	if _, ok := payload["choices"]; ok {
+		return Classified{}, false
+	}
+	status := 0
+	if value, ok := payload["status"].(float64); ok {
+		status = int(value)
+	}
+	if _, ok := payload["error"]; ok {
+		return Classify(status, data, "", "", ""), true
+	}
+	if strings.EqualFold(eventName, "error") {
+		return Classify(status, data, "", "", ""), true
+	}
+	return Classified{}, false
 }
 
 func (e ChatExecutor) handleModelAvailabilityFailure(requestID, source, accountID, model string, classified Classified) {
@@ -1166,6 +1263,32 @@ func (e ChatExecutor) chatInProcessStreamAttempt(ctx context.Context, item Item,
 		})
 		return StreamResult{AccountID: item.ID, Provider: item.Provider}, classified, NewExecutionError(classified, err)
 	}
+	probed, probeClassified, probeErr := probeStreamBody(ctx, resp.Body)
+	if probeErr != nil {
+		finished := time.Now().UTC()
+		latency := int(finished.Sub(started).Milliseconds())
+		if requestContextDone(ctx, probeErr) {
+			// The client went away before the first event. Report the
+			// cancellation and leave the account's cooldown untouched.
+			classified := ClassifyError(probeErr)
+			return StreamResult{AccountID: item.ID, Provider: item.Provider}, classified, NewExecutionError(classified, probeErr)
+		}
+		classified := probeClassified
+		if classified.Kind == "" {
+			classified = Classify(0, probeErr.Error(), "", accounts.KindUnavailable, "")
+		}
+		e.markClassified(item.ID, classified, req.Model)
+		status := accounts.AttemptStatusError
+		if classified.Failover {
+			status = accounts.AttemptStatusFailover
+		}
+		e.recordAttempt(ctx, accounts.RequestAttempt{
+			AttemptIndex: attemptIndex, AccountID: item.ID, StartedAt: started, FinishedAt: &finished,
+			Status: status, ErrorKind: classified.Kind, ErrorMessage: truncateErr(probeErr.Error()), LatencyMs: &latency,
+		})
+		return StreamResult{AccountID: item.ID, Provider: item.Provider}, classified, NewExecutionError(classified, probeErr)
+	}
+	resp.Body = probed
 	e.markOK(item.ID, req.Model)
 	ttfb := int(time.Since(started).Milliseconds())
 	headerAt := time.Now().UTC()
@@ -1352,6 +1475,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 			}
 			return StreamResult{}, pickErr
 		}
+		noteStreamRoute(ctx, item.ID, loop.resultProvider(item))
 		poolID := item.ID
 		if !e.acquireInFlight(loop.requestID, poolID) {
 			loop.exclude(item)
@@ -1417,6 +1541,7 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 		}
 		if account := resp.Header.Get("X-Qoder-Account"); account != "" {
 			item.ID = account
+			noteStreamRoute(ctx, item.ID, loop.resultProvider(item))
 		}
 		if resp.StatusCode >= 300 {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxWorkerResponseBytes))
@@ -1450,6 +1575,49 @@ func (e ChatExecutor) chatStreamProxy(ctx context.Context, req translate.ChatReq
 			release()
 			return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: loop.resultProvider(item)}, loop.lastErr
 		}
+		probed, probeClassified, probeErr := probeStreamBody(ctx, resp.Body)
+		if probeErr != nil {
+			if requestContextDone(ctx, probeErr) {
+				// The client went away before the first event. Record the
+				// cancellation without cooling the account or failing over.
+				classified := ClassifyError(probeErr)
+				latency := int(time.Since(started).Milliseconds())
+				e.recordAttempt(ctx, accounts.RequestAttempt{
+					AttemptIndex: i, AccountID: item.ID, StartedAt: started, FinishedAt: ptrTime(time.Now().UTC()),
+					Status: accounts.AttemptStatusError, ErrorKind: classified.Kind, ErrorMessage: probeErr.Error(), LatencyMs: &latency,
+				})
+				release()
+				return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: item.Provider}, NewExecutionError(classified, probeErr)
+			}
+			classified := probeClassified
+			if classified.Kind == "" {
+				classified = Classify(0, probeErr.Error(), "", accounts.KindUnavailable, "")
+			}
+			loop.lastErr = NewExecutionError(classified, fmt.Errorf("worker %s stream failed before the first event: %w", item.ID, probeErr))
+			e.markClassified(item.ID, classified, req.Model)
+			finished := time.Now().UTC()
+			latency := int(finished.Sub(started).Milliseconds())
+			status := accounts.AttemptStatusError
+			if loop.canFailover(classified) {
+				status = accounts.AttemptStatusFailover
+				e.recordAttempt(ctx, accounts.RequestAttempt{
+					AttemptIndex: i, AccountID: item.ID, StartedAt: started, FinishedAt: &finished,
+					Status: status, HTTPStatus: ptrInt(resp.StatusCode), ErrorKind: classified.Kind,
+					ErrorMessage: truncateErr(probeErr.Error()), LatencyMs: &latency,
+				})
+				loop.exclude(item)
+				release()
+				continue
+			}
+			e.recordAttempt(ctx, accounts.RequestAttempt{
+				AttemptIndex: i, AccountID: item.ID, StartedAt: started, FinishedAt: &finished,
+				Status: status, HTTPStatus: ptrInt(resp.StatusCode), ErrorKind: classified.Kind,
+				ErrorMessage: truncateErr(probeErr.Error()), LatencyMs: &latency,
+			})
+			release()
+			return StreamResult{AttemptCount: i + 1, AccountID: item.ID, Provider: loop.resultProvider(item)}, loop.lastErr
+		}
+		resp.Body = probed
 		e.markOK(item.ID, req.Model)
 		ttfb := int(time.Since(startedAll).Milliseconds())
 		headerAt := time.Now().UTC()

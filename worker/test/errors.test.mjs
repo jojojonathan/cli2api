@@ -12,12 +12,12 @@ test("prompt token limit is request-level and does not cool accounts", () => {
   assert.equal(got.cooldownSec, 0);
 });
 
-test("hard quota is 429 and does not failover", () => {
+test("hard quota is 429, failovers, and cools until local midnight", () => {
   const got = classifyError({ message: "insufficient_quota: account quota exhausted" });
   assert.equal(got.kind, "quota");
   assert.equal(got.status, 429);
-  assert.equal(got.failover, false);
-  assert.equal(got.cooldownSec, 0);
+  assert.equal(got.failover, true);
+  assert.ok(got.cooldownSec > 0 && got.cooldownSec <= 24 * 60 * 60);
 });
 
 test("generic 429 rate limit failovers with cooldown", () => {
@@ -79,7 +79,7 @@ test("model catalog outage keeps a distinct retryable code", () => {
 test("shouldFailover reads nested JSON", () => {
   assert.equal(
     shouldFailover(429, JSON.stringify({ error: { message: "insufficient_quota", code: "insufficient_quota" } })),
-    false,
+    true,
   );
   assert.equal(shouldFailover(429, JSON.stringify({ error: { message: "too many requests" } })), true);
 });
@@ -106,5 +106,5 @@ test("recognizes nested CodeBuddy quota code", () => {
   });
   assert.equal(got.kind, "quota");
   assert.equal(got.code, "14018");
-  assert.equal(got.failover, false);
+  assert.equal(got.failover, true);
 });
